@@ -1,7 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Scene, MediaVersion, TransitionType } from '../types';
-import { Play, Pause, Music, Download, Layers, Film, Mic, Clock, RefreshCw, Volume2, History, Link, Wand2, Plus, ZoomIn, ZoomOut, MonitorPlay, FastForward } from 'lucide-react';
+import { Play, Pause, Music, Download, Layers, Film, Mic, Clock, RefreshCw, Volume2, History, Link, Wand2, Plus, ZoomIn, ZoomOut, MonitorPlay, FastForward, FileVideo } from 'lucide-react';
 import { generateBgm } from '../services/geminiService';
+import { videoExporter, ExportProgress } from '../services/videoExporter';
+import { ExportModal } from './ExportModal';
 
 interface TimelineEditorProps {
   scenes: Scene[];
@@ -29,6 +31,9 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
   const [showBgmHistory, setShowBgmHistory] = useState(false);
   const [timelineZoom, setTimelineZoom] = useState(1); // Zoom level 0.5 to 2.0
   const [isExporting, setIsExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
+  const [exportedVideoUrl, setExportedVideoUrl] = useState<string | null>(null);
+  const [showExportModal, setShowExportModal] = useState(false);
 
   // References for Playback
   const videoRefs = useRef<{ [key: string]: HTMLVideoElement | null }>({});
@@ -190,25 +195,81 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
      alert("모든 장면의 길이가 대사 길이에 맞춰 조정되었습니다.");
   };
 
-  // --- MP4 Export Logic using Canvas & MediaRecorder ---
+  // --- MP4 Export Logic using FFmpeg.wasm ---
   const handleExportMp4 = async () => {
+    if (scenes.length === 0) {
+      alert('내보낼 장면이 없습니다.');
+      return;
+    }
+
+    // Check if there are any valid scenes with media
+    const validScenes = scenes.filter(s => s.imageUrl || s.videoUrl);
+    if (validScenes.length === 0) {
+      alert('이미지 또는 영상이 생성된 장면이 없습니다. 먼저 장면의 미디어를 생성해주세요.');
+      return;
+    }
+
+    setIsExporting(true);
+    setShowExportModal(true);
+    setExportProgress(null);
+    setExportedVideoUrl(null);
+
+    try {
+      const blob = await videoExporter.exportToMp4(
+        scenes,
+        bgmUrl,
+        (progress) => setExportProgress(progress)
+      );
+
+      const url = URL.createObjectURL(blob);
+      setExportedVideoUrl(url);
+      setExportProgress({
+        stage: 'complete',
+        progress: 100,
+        message: '내보내기 완료! 다운로드 버튼을 클릭하세요.'
+      });
+    } catch (error: any) {
+      console.error('Export failed:', error);
+      setExportProgress({
+        stage: 'error',
+        progress: 0,
+        message: error.message || '내보내기 중 오류가 발생했습니다.'
+      });
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleDownloadExport = () => {
+    if (!exportedVideoUrl) return;
+
+    const a = document.createElement('a');
+    a.href = exportedVideoUrl;
+    a.download = `red_garden_episode_${Date.now()}.mp4`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const handleCloseExportModal = () => {
+    setShowExportModal(false);
+    if (exportedVideoUrl) {
+      URL.revokeObjectURL(exportedVideoUrl);
+      setExportedVideoUrl(null);
+    }
+    setExportProgress(null);
+  };
+
+  // --- Legacy WebM Export (Real-time recording) ---
+  const handleExportWebm = async () => {
     if (!canvasRef.current) return;
     setIsExporting(true);
     setCurrentSceneIndex(0);
     recordedChunksRef.current = [];
 
-    const stream = canvasRef.current.captureStream(30); // 30fps
-    
-    // Add audio tracks (BGM + Dialogue)
-    // Note: To mix audio properly in browser without WebAudio API complexity, 
-    // we often capture the destination node. Here we simplify by trying to capture the audio context if possible,
-    // or just recording the video stream.
-    // *Limitation*: capturing DOM audio elements into MediaRecorder is complex. 
-    // We will attempt to capture the video stream. For full audio muxing, we would need a WebAudio graph.
-    // For this demo, we will output the VIDEO track.
-    
-    const mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm; codecs=vp9' }); // Chrome supports webm export usually
-    
+    const stream = canvasRef.current.captureStream(30);
+    const mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm; codecs=vp9' });
+
     mediaRecorder.ondataavailable = (event) => {
       if (event.data.size > 0) {
         recordedChunksRef.current.push(event.data);
@@ -220,19 +281,17 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'red_garden_episode.webm'; // .webm is native, .mp4 requires transcoding usually
+      a.download = `red_garden_episode_${Date.now()}.webm`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       setIsExporting(false);
       setIsPlaying(false);
-      alert("내보내기 완료! (.webm 형식으로 저장되었습니다. 브라우저 호환성 문제로 MP4 변환은 별도 툴을 권장합니다.)");
+      alert("내보내기 완료! (.webm 형식)");
     };
 
     mediaRecorderRef.current = mediaRecorder;
     mediaRecorder.start();
-
-    // Start playback
     setIsPlaying(true);
   };
 
@@ -277,6 +336,15 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
 
   return (
     <div className="max-w-6xl mx-auto animate-in fade-in duration-500 pb-20">
+      {/* Export Modal */}
+      <ExportModal
+        isOpen={showExportModal}
+        progress={exportProgress}
+        onClose={handleCloseExportModal}
+        onDownload={handleDownloadExport}
+        downloadUrl={exportedVideoUrl || undefined}
+      />
+
       <div className="text-center mb-8">
         <h2 className="text-3xl font-bold text-white mb-2 flex items-center justify-center gap-3">
           <Layers className="text-primary-500" /> 타임라인 편집 & 미리보기
@@ -332,8 +400,8 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
       </div>
 
       {/* Controls */}
-      <div className="flex justify-center gap-4 mb-8">
-        <button 
+      <div className="flex flex-wrap justify-center gap-4 mb-8">
+        <button
           onClick={() => setIsPlaying(!isPlaying)}
           disabled={isExporting}
           className="flex items-center gap-2 px-8 py-3 bg-white text-gray-900 rounded-full font-bold hover:bg-gray-200 transition-colors shadow-lg disabled:opacity-50"
@@ -342,13 +410,31 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
           {isPlaying ? "일시정지" : "전체 재생"}
         </button>
 
-        <button 
+        <button
           onClick={handleExportMp4}
           disabled={isExporting}
-          className="flex items-center gap-2 px-8 py-3 bg-red-600 text-white rounded-full font-bold hover:bg-red-500 transition-colors shadow-lg shadow-red-500/30 disabled:opacity-50"
+          className="flex items-center gap-2 px-8 py-3 bg-gradient-to-r from-red-600 to-rose-600 text-white rounded-full font-bold hover:from-red-500 hover:to-rose-500 transition-all shadow-lg shadow-red-500/30 disabled:opacity-50"
         >
-          <MonitorPlay size={20} /> MP4 내보내기 (실시간 렌더링)
+          <FileVideo size={20} /> MP4 내보내기
         </button>
+
+        <button
+          onClick={handleExportWebm}
+          disabled={isExporting}
+          className="flex items-center gap-2 px-6 py-3 bg-gray-700 text-gray-200 rounded-full font-medium hover:bg-gray-600 transition-colors shadow-lg disabled:opacity-50"
+          title="실시간 녹화 방식 (빠름, 오디오 미포함)"
+        >
+          <MonitorPlay size={18} /> WebM (실시간)
+        </button>
+      </div>
+
+      {/* Export Info */}
+      <div className="flex justify-center mb-8">
+        <div className="bg-gray-800/50 rounded-lg px-4 py-2 text-xs text-gray-400 flex items-center gap-4 border border-gray-700">
+          <span><strong className="text-primary-400">MP4:</strong> FFmpeg 인코딩, 오디오 포함, 고품질</span>
+          <span className="text-gray-600">|</span>
+          <span><strong className="text-gray-300">WebM:</strong> 실시간 녹화, 영상만</span>
+        </div>
       </div>
 
       {/* Track Manager */}

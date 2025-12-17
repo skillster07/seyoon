@@ -12,6 +12,8 @@
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "@google/genai": "^1.33.0",
+    "@ffmpeg/ffmpeg": "^0.12.10",
+    "@ffmpeg/util": "^0.12.1",
     "lucide-react": "^0.561.0",
     "uuid": "^13.0.0"
   },
