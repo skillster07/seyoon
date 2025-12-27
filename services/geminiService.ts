@@ -1,5 +1,6 @@
 import { GoogleGenAI, Type, Schema, Modality } from "@google/genai";
-import { ScriptAnalysisResponse, Character } from "../types";
+import { ScriptAnalysisResponse, Character, ShortsTemplate, TemplateScene, Scene } from "../types";
+import { v4 as uuidv4 } from 'uuid';
 
 // Helper to get client with current key
 const getAiClient = () => {
@@ -123,8 +124,7 @@ export const generateImageFromPrompt = async (prompt: string): Promise<string> =
       },
       config: {
         imageConfig: {
-          aspectRatio: "16:9",
-          numberOfImages: 1
+          aspectRatio: "16:9"
         }
       }
     });
@@ -319,3 +319,149 @@ function writeString(view: DataView, offset: number, string: string) {
     view.setUint8(offset + i, string.charCodeAt(i));
   }
 }
+
+// ============================================
+// Shorts Template Functions
+// ============================================
+
+/**
+ * Generates a vertical (9:16) image for shorts/reels content.
+ */
+export const generateShortsImage = async (prompt: string): Promise<string> => {
+  const ai = getAiClient();
+  try {
+    // Add cinematic dark-fantasy maritime style for sea monster content
+    const styleSuffix = ", cinematic composition, volumetric lighting, dramatic atmosphere, high contrast, 8k resolution, realistic, no watermark, no text, no logo";
+
+    let finalPrompt = prompt;
+    if (!finalPrompt.toLowerCase().includes('cinematic')) finalPrompt += styleSuffix;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash-image",
+      contents: {
+        parts: [
+          { text: finalPrompt }
+        ]
+      },
+      config: {
+        imageConfig: {
+          aspectRatio: "9:16"  // Vertical for shorts
+        }
+      }
+    });
+
+    if (response.candidates && response.candidates[0].content && response.candidates[0].content.parts) {
+      for (const part of response.candidates[0].content.parts) {
+        if (part.inlineData && part.inlineData.data) {
+          const base64Data = part.inlineData.data;
+          const mimeType = part.inlineData.mimeType || 'image/png';
+          return `data:${mimeType};base64,${base64Data}`;
+        }
+      }
+    }
+
+    throw new Error("응답에서 이미지 데이터를 찾을 수 없습니다.");
+  } catch (error) {
+    console.error("Shorts image generation failed:", error);
+    throw error;
+  }
+};
+
+/**
+ * Generates a vertical video for shorts/reels using Veo.
+ */
+export const generateShortsVideo = async (prompt: string, imageBase64: string): Promise<{url: string, assetContext: any}> => {
+  const ai = getAiClient();
+  const rawBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, "");
+
+  try {
+    let operation = await ai.models.generateVideos({
+      model: 'veo-3.1-fast-generate-preview',
+      prompt: `${prompt}, vertical video 9:16 aspect ratio, cinematic movement, high quality, fluid motion, dramatic lighting`,
+      image: {
+        imageBytes: rawBase64,
+        mimeType: 'image/png',
+      },
+      config: {
+        numberOfVideos: 1,
+        resolution: '720p',
+        aspectRatio: '9:16'  // Vertical for shorts
+      }
+    });
+
+    // Poll for completion
+    while (!operation.done) {
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      operation = await ai.operations.getVideosOperation({operation: operation});
+    }
+
+    const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
+    if (!downloadLink) throw new Error("비디오 생성 실패: 다운로드 링크가 없습니다.");
+
+    const videoResponse = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
+    const videoBlob = await videoResponse.blob();
+    const url = URL.createObjectURL(videoBlob);
+    const assetContext = operation.response?.generatedVideos?.[0]?.video;
+
+    return { url, assetContext };
+
+  } catch (error) {
+    console.error("Shorts video generation failed:", error);
+    throw error;
+  }
+};
+
+/**
+ * Helper to get flag emoji from country code
+ */
+export function getFlagEmoji(countryCode: string): string {
+  const codePoints = countryCode
+    .toUpperCase()
+    .split('')
+    .map(char => 127397 + char.charCodeAt(0));
+  return String.fromCodePoint(...codePoints);
+}
+
+/**
+ * Converts a ShortsTemplate to an array of Scene objects.
+ * This flattens the template's scenes/shots structure into individual scenes.
+ */
+export const convertTemplateToScenes = (template: ShortsTemplate): Scene[] => {
+  const scenes: Scene[] = [];
+  const globalStyle = template.global_style;
+  const negativePrompt = globalStyle.negative_prompt.join(', ');
+  const visualTone = globalStyle.visual_tone.join(', ');
+  const vfxEffects = globalStyle.vfx.join(', ');
+
+  template.scenes.forEach((templateScene: TemplateScene) => {
+    templateScene.shots.forEach((shot) => {
+      // Build enhanced prompt with global style context
+      const enhancedPrompt = [
+        shot.prompt,
+        `visual style: ${visualTone}`,
+        `VFX: ${vfxEffects}`,
+        `camera: ${shot.camera}`,
+        `vertical 9:16 aspect ratio for shorts/reels`,
+        `theme: ${templateScene.theme_monster}`,
+        `Negative prompt: ${negativePrompt}`
+      ].join(', ');
+
+      const scene: Scene = {
+        id: uuidv4(),
+        originalText: `[${templateScene.country.name_ko} ${getFlagEmoji(templateScene.country.flag)}] ${templateScene.theme_monster} - ${shot.shot_id}`,
+        visualPrompt: enhancedPrompt,
+        duration: shot.duration_s,
+        transition: 'fade',
+        imageVersions: [],
+        videoVersions: [],
+        audioVersions: [],
+        isGeneratingImage: false,
+        isGeneratingVideo: false,
+        isGeneratingAudio: false
+      };
+      scenes.push(scene);
+    });
+  });
+
+  return scenes;
+};

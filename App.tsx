@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
-import { analyzeScript, generateImageFromPrompt, generateVideo, generateSpeech, extendVideo } from './services/geminiService';
+import { analyzeScript, generateImageFromPrompt, generateVideo, generateSpeech, extendVideo, generateShortsImage, generateShortsVideo } from './services/geminiService';
 import { Scene, AppStatus, AppView, Character, MediaVersion, AIStudio, TransitionType, Project, UserSettings } from './types';
 import { SceneCard } from './components/SceneCard';
 import { CharacterDB } from './components/CharacterDB';
@@ -8,13 +8,15 @@ import { StoryWriter } from './components/StoryWriter';
 import { TimelineEditor } from './components/TimelineEditor';
 import { ProjectDashboard } from './components/ProjectDashboard';
 import { SettingsModal } from './components/SettingsModal';
-import { Clapperboard, Sparkles, AlertCircle, Trash2, ArrowRight, PenTool, Users, Layout, Layers, Key, Save, Upload, ArrowLeft, Download, Settings } from 'lucide-react';
+import { TemplateSelector } from './components/TemplateSelector';
+import { Clapperboard, Sparkles, AlertCircle, Trash2, ArrowRight, PenTool, Users, Layout, Layers, Key, Save, Upload, ArrowLeft, Download, Settings, Film } from 'lucide-react';
 
 const App: React.FC = () => {
   // --- Global State ---
   const [hasVeoKey, setHasVeoKey] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [showTemplateSelector, setShowTemplateSelector] = useState(false);
   const [userSettings, setUserSettings] = useState<UserSettings>({
     defaultDuration: 5,
     autoSave: true,
@@ -108,6 +110,34 @@ const App: React.FC = () => {
     };
     setProjects(prev => [newProject, ...prev]);
     handleSelectProject(newProject);
+  };
+
+  const handleApplyTemplate = (templateScenes: Scene[], projectTitle: string) => {
+    const newProject: Project = {
+      id: uuidv4(),
+      title: projectTitle,
+      lastModified: Date.now(),
+      data: {
+        script: `[${projectTitle}] 템플릿 기반 프로젝트`,
+        characters: [],
+        scenes: templateScenes,
+        bgmUrl: undefined,
+        bgmVersions: []
+      }
+    };
+    setProjects(prev => [newProject, ...prev]);
+    setShowTemplateSelector(false);
+
+    // Select and open the new project
+    setActiveProjectId(newProject.id);
+    setScript(newProject.data.script);
+    setCharacters(newProject.data.characters);
+    setScenes(newProject.data.scenes);
+    setBgmUrl(newProject.data.bgmUrl);
+    setBgmVersions(newProject.data.bgmVersions);
+    setCurrentView(AppView.STORYBOARD);
+    setStatus(AppStatus.READY);
+    setError(null);
   };
 
   const handleSelectProject = (project: Project) => {
@@ -435,13 +465,46 @@ const App: React.FC = () => {
 
       {/* --- DASHBOARD VIEW --- */}
       {!activeProjectId ? (
-        <ProjectDashboard 
-          projects={projects}
-          onCreateProject={handleCreateProject}
-          onSelectProject={handleSelectProject}
-          onDeleteProject={handleDeleteProject}
-          onImportProject={handleImportProject}
-        />
+        showTemplateSelector ? (
+          <TemplateSelector
+            onApplyTemplate={handleApplyTemplate}
+            onCancel={() => setShowTemplateSelector(false)}
+          />
+        ) : (
+          <div className="flex flex-col">
+            {/* Template Banner */}
+            <div className="bg-gradient-to-r from-cyan-900/40 to-blue-900/40 border-b border-cyan-800/50">
+              <div className="max-w-6xl mx-auto px-4 py-6">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-4">
+                    <div className="p-3 bg-cyan-600/30 rounded-xl">
+                      <Film className="text-cyan-400" size={28} />
+                    </div>
+                    <div>
+                      <h2 className="text-xl font-bold text-white">Shorts 템플릿</h2>
+                      <p className="text-sm text-gray-400">TikTok, Reels, Shorts용 바이럴 콘텐츠 템플릿</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setShowTemplateSelector(true)}
+                    className="px-6 py-3 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white rounded-xl font-semibold transition-all shadow-lg shadow-cyan-500/20 flex items-center gap-2"
+                  >
+                    <Sparkles size={18} />
+                    템플릿 보기
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <ProjectDashboard
+              projects={projects}
+              onCreateProject={handleCreateProject}
+              onSelectProject={handleSelectProject}
+              onDeleteProject={handleDeleteProject}
+              onImportProject={handleImportProject}
+            />
+          </div>
+        )
       ) : (
         /* --- EDITOR VIEW --- */
         <>
