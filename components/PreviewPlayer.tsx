@@ -1,6 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { NewsItem } from "../types";
 import {
+  isBrowserTTS,
+  playBrowserTTS,
+  stopBrowserTTS,
+} from "../services/geminiService";
+import {
   Play,
   Pause,
   SkipForward,
@@ -29,8 +34,15 @@ export const PreviewPlayer: React.FC<Props> = ({
   const validItems = newsItems.filter((n) => n.imageUrl || n.videoUrl);
 
   const playCurrentAudio = useCallback(() => {
-    if (audioRef.current && validItems[currentIndex]?.audioUrl && !isMuted) {
-      audioRef.current.src = validItems[currentIndex].audioUrl!;
+    if (isMuted) return;
+    const audioUrl = validItems[currentIndex]?.audioUrl;
+    if (!audioUrl) return;
+
+    stopBrowserTTS();
+    if (isBrowserTTS(audioUrl)) {
+      playBrowserTTS(audioUrl);
+    } else if (audioRef.current) {
+      audioRef.current.src = audioUrl;
       audioRef.current.play().catch(() => {});
     }
   }, [currentIndex, validItems, isMuted]);

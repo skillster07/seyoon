@@ -1,6 +1,11 @@
 import React, { useState } from "react";
 import { NewsItem } from "../types";
 import {
+  isBrowserTTS,
+  playBrowserTTS,
+  stopBrowserTTS,
+} from "../services/geminiService";
+import {
   ImagePlus,
   Volume2,
   Video,
@@ -11,6 +16,8 @@ import {
   ChevronDown,
   ChevronUp,
   Hash,
+  Play,
+  Square,
 } from "lucide-react";
 
 interface Props {
@@ -32,6 +39,23 @@ export const NewsCard: React.FC<Props> = ({
   const [editScript, setEditScript] = useState(item.narrationScript);
   const [editPrompt, setEditPrompt] = useState(item.imagePrompt);
   const [showDetails, setShowDetails] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+
+  const handleBrowserTTS = () => {
+    if (isSpeaking) {
+      stopBrowserTTS();
+      setIsSpeaking(false);
+      return;
+    }
+    if (item.audioUrl && isBrowserTTS(item.audioUrl)) {
+      const utterance = playBrowserTTS(item.audioUrl);
+      if (utterance) {
+        setIsSpeaking(true);
+        utterance.onend = () => setIsSpeaking(false);
+        utterance.onerror = () => setIsSpeaking(false);
+      }
+    }
+  };
 
   const handleSaveEdit = () => {
     onUpdateItem({
@@ -177,14 +201,34 @@ export const NewsCard: React.FC<Props> = ({
           )}
 
           {/* Audio Preview */}
-          {item.audioUrl && (
-            <audio
-              src={item.audioUrl}
-              controls
-              className="w-full h-8 mt-2"
-              style={{ filter: "invert(1)" }}
-            />
-          )}
+          {item.audioUrl &&
+            (isBrowserTTS(item.audioUrl) ? (
+              <button
+                onClick={handleBrowserTTS}
+                className={`w-full mt-2 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors ${
+                  isSpeaking
+                    ? "bg-red-600/20 text-red-400 border border-red-600/40"
+                    : "bg-purple-600/20 text-purple-400 border border-purple-600/40 hover:bg-purple-600/30"
+                }`}
+              >
+                {isSpeaking ? (
+                  <>
+                    <Square size={14} /> 정지
+                  </>
+                ) : (
+                  <>
+                    <Play size={14} /> 브라우저 TTS 재생
+                  </>
+                )}
+              </button>
+            ) : (
+              <audio
+                src={item.audioUrl}
+                controls
+                className="w-full h-8 mt-2"
+                style={{ filter: "invert(1)" }}
+              />
+            ))}
 
           {/* Video Preview */}
           {item.videoUrl && (

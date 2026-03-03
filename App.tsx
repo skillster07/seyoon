@@ -17,6 +17,9 @@ import {
   generateNewsImage,
   generateTTS,
   generateNewsVideo,
+  isBrowserTTS,
+  playBrowserTTS,
+  stopBrowserTTS,
 } from "./services/geminiService";
 import { PipelineProgress } from "./components/PipelineProgress";
 import { NewsCard } from "./components/NewsCard";
@@ -462,14 +465,17 @@ const App: React.FC = () => {
                     onChange={(e) => setIntroScript(e.target.value)}
                     className="w-full bg-gray-900 rounded-lg p-3 text-sm text-gray-300 resize-none h-20 border border-gray-700 focus:border-blue-500 focus:outline-none"
                   />
-                  {introAudioUrl && (
-                    <audio
-                      src={introAudioUrl}
-                      controls
-                      className="w-full h-8 mt-1"
-                      style={{ filter: "invert(1)" }}
-                    />
-                  )}
+                  {introAudioUrl &&
+                    (isBrowserTTS(introAudioUrl) ? (
+                      <BrowserTTSButton url={introAudioUrl} />
+                    ) : (
+                      <audio
+                        src={introAudioUrl}
+                        controls
+                        className="w-full h-8 mt-1"
+                        style={{ filter: "invert(1)" }}
+                      />
+                    ))}
                 </div>
                 <div>
                   <label className="text-xs text-gray-500 mb-1 block">
@@ -480,14 +486,17 @@ const App: React.FC = () => {
                     onChange={(e) => setOutroScript(e.target.value)}
                     className="w-full bg-gray-900 rounded-lg p-3 text-sm text-gray-300 resize-none h-20 border border-gray-700 focus:border-blue-500 focus:outline-none"
                   />
-                  {outroAudioUrl && (
-                    <audio
-                      src={outroAudioUrl}
-                      controls
-                      className="w-full h-8 mt-1"
-                      style={{ filter: "invert(1)" }}
-                    />
-                  )}
+                  {outroAudioUrl &&
+                    (isBrowserTTS(outroAudioUrl) ? (
+                      <BrowserTTSButton url={outroAudioUrl} />
+                    ) : (
+                      <audio
+                        src={outroAudioUrl}
+                        controls
+                        className="w-full h-8 mt-1"
+                        style={{ filter: "invert(1)" }}
+                      />
+                    ))}
                 </div>
               </div>
             </div>
@@ -554,5 +563,36 @@ function getPreviousDate(dateStr: string): string {
   date.setDate(date.getDate() - 1);
   return date.toISOString().split("T")[0];
 }
+
+const BrowserTTSButton: React.FC<{ url: string }> = ({ url }) => {
+  const [speaking, setSpeaking] = React.useState(false);
+
+  const handleClick = () => {
+    if (speaking) {
+      stopBrowserTTS();
+      setSpeaking(false);
+    } else {
+      const utterance = playBrowserTTS(url);
+      if (utterance) {
+        setSpeaking(true);
+        utterance.onend = () => setSpeaking(false);
+        utterance.onerror = () => setSpeaking(false);
+      }
+    }
+  };
+
+  return (
+    <button
+      onClick={handleClick}
+      className={`w-full mt-1 flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg text-xs transition-colors ${
+        speaking
+          ? "bg-red-600/20 text-red-400 border border-red-600/40"
+          : "bg-purple-600/20 text-purple-400 border border-purple-600/40 hover:bg-purple-600/30"
+      }`}
+    >
+      {speaking ? "⏹ 정지" : "▶ 브라우저 TTS 재생"}
+    </button>
+  );
+};
 
 export default App;

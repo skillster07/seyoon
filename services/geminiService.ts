@@ -134,7 +134,48 @@ function generatePlaceholderImage(prompt: string): string {
 }
 
 /**
- * Generate TTS audio from narration text using Gemini TTS.
+ * TTS fallback URL prefix. URLs starting with this use browser Speech API.
+ */
+export const BROWSER_TTS_PREFIX = "browser-tts:";
+
+/**
+ * Check if an audio URL is a browser TTS fallback.
+ */
+export const isBrowserTTS = (url: string): boolean =>
+  url.startsWith(BROWSER_TTS_PREFIX);
+
+/**
+ * Play text using the browser's built-in Speech Synthesis API.
+ */
+export const playBrowserTTS = (url: string): SpeechSynthesisUtterance | null => {
+  if (!isBrowserTTS(url)) return null;
+  const text = decodeURIComponent(url.slice(BROWSER_TTS_PREFIX.length));
+
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = "ko-KR";
+  utterance.rate = 0.95;
+  utterance.pitch = 1.0;
+
+  // Try to find a Korean voice
+  const voices = window.speechSynthesis.getVoices();
+  const koreanVoice = voices.find((v) => v.lang.startsWith("ko"));
+  if (koreanVoice) utterance.voice = koreanVoice;
+
+  window.speechSynthesis.speak(utterance);
+  return utterance;
+};
+
+/**
+ * Stop any ongoing browser TTS playback.
+ */
+export const stopBrowserTTS = () => {
+  window.speechSynthesis.cancel();
+};
+
+/**
+ * Generate TTS audio from narration text.
+ * Tries Gemini TTS first, falls back to browser Speech Synthesis API.
  */
 export const generateTTS = async (
   text: string,
@@ -142,41 +183,53 @@ export const generateTTS = async (
 ): Promise<string> => {
   const ai = getAiClient();
 
-  const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash-preview-tts",
-    contents: [{ parts: [{ text }] }],
-    config: {
-      responseModalities: [Modality.AUDIO],
-      speechConfig: {
-        voiceConfig: {
-          prebuiltVoiceConfig: { voiceName },
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash-preview-tts",
+      contents: [{ parts: [{ text }] }],
+      config: {
+        responseModalities: [Modality.AUDIO],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName },
+          },
         },
       },
-    },
-  });
+    });
 
-  const base64Audio =
-    response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-  if (!base64Audio) throw new Error("TTS 생성 실패");
+    const base64Audio =
+      response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+    if (!base64Audio) throw new Error("TTS 응답에 오디오 없음");
 
-  const binaryString = atob(base64Audio);
-  const len = binaryString.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
+    const binaryString = atob(base64Audio);
+    const len = binaryString.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+
+    const wavBlob = pcmToWav(bytes, 24000);
+    return URL.createObjectURL(wavBlob);
+  } catch (e: any) {
+    console.warn("Gemini TTS failed, using browser Speech API:", e.message);
+    // Return a special URL that components will handle with browser TTS
+    return `${BROWSER_TTS_PREFIX}${encodeURIComponent(text)}`;
   }
-
-  const wavBlob = pcmToWav(bytes, 24000);
-  return URL.createObjectURL(wavBlob);
 };
 
 /**
  * Generate video from image using Veo.
+ * Returns null if quota is exhausted instead of throwing.
  */
 export const generateNewsVideo = async (
   prompt: string,
   imageBase64: string
 ): Promise<{ url: string; assetContext: any }> => {
+  // Check if the image is a placeholder (not from API)
+  if (imageBase64.includes("API 할당량 초과")) {
+    throw new Error("API 이미지로 생성된 경우에만 영상 변환이 가능합니다. 이미지 API 할당량이 복구된 후 다시 시도해주세요.");
+  }
+
   const ai = getAiClient();
   const rawBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, "");
 
