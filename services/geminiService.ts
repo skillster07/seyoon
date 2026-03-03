@@ -5,42 +5,133 @@ const getAiClient = () => {
 };
 
 /**
- * Generate a news-style image from a prompt using Gemini image generation.
+ * Generate a news-style image from a prompt.
+ * Tries imagen-3.0 first, falls back to gemini-2.5-flash-image,
+ * then generates a placeholder if all API calls fail.
  */
 export const generateNewsImage = async (prompt: string): Promise<string> => {
   const ai = getAiClient();
 
   const enhancedPrompt = `${prompt}, photorealistic, news editorial illustration, professional photography, 16:9 composition, high quality, detailed, dramatic lighting`;
 
-  const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash-image",
-    contents: {
-      parts: [{ text: enhancedPrompt }],
-    },
-    config: {
-      imageConfig: {
-        aspectRatio: "16:9",
+  // Try 1: imagen-3.0-generate-002 (separate quota from Gemini models)
+  try {
+    const response = await ai.models.generateImages({
+      model: "imagen-3.0-generate-002",
+      prompt: enhancedPrompt,
+      config: {
         numberOfImages: 1,
       },
-    },
-  });
+    });
 
-  if (
-    response.candidates &&
-    response.candidates[0].content &&
-    response.candidates[0].content.parts
-  ) {
-    for (const part of response.candidates[0].content.parts) {
-      if (part.inlineData && part.inlineData.data) {
-        const base64Data = part.inlineData.data;
-        const mimeType = part.inlineData.mimeType || "image/png";
-        return `data:${mimeType};base64,${base64Data}`;
-      }
+    const imageBytes = response.generatedImages?.[0]?.image?.imageBytes;
+    if (imageBytes) {
+      return `data:image/png;base64,${imageBytes}`;
     }
+  } catch (e: any) {
+    console.warn("Imagen 3.0 failed, trying Gemini flash-image:", e.message);
   }
 
-  throw new Error("이미지 생성 실패: 응답에서 이미지 데이터를 찾을 수 없습니다.");
+  // Try 2: gemini-2.5-flash-image (original approach)
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash-image",
+      contents: {
+        parts: [{ text: enhancedPrompt }],
+      },
+      config: {
+        imageConfig: {
+          aspectRatio: "16:9",
+          numberOfImages: 1,
+        },
+      },
+    });
+
+    if (
+      response.candidates &&
+      response.candidates[0].content &&
+      response.candidates[0].content.parts
+    ) {
+      for (const part of response.candidates[0].content.parts) {
+        if (part.inlineData && part.inlineData.data) {
+          const base64Data = part.inlineData.data;
+          const mimeType = part.inlineData.mimeType || "image/png";
+          return `data:${mimeType};base64,${base64Data}`;
+        }
+      }
+    }
+  } catch (e: any) {
+    console.warn("Gemini flash-image failed, using placeholder:", e.message);
+  }
+
+  // Fallback: Generate a canvas-based placeholder image
+  return generatePlaceholderImage(prompt);
 };
+
+/**
+ * Generate a placeholder image using Canvas API when API quota is exhausted.
+ */
+function generatePlaceholderImage(prompt: string): string {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1280;
+  canvas.height = 720;
+  const ctx = canvas.getContext("2d")!;
+
+  // Dark gradient background
+  const gradient = ctx.createLinearGradient(0, 0, 1280, 720);
+  gradient.addColorStop(0, "#1a1a2e");
+  gradient.addColorStop(0.5, "#16213e");
+  gradient.addColorStop(1, "#0f3460");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, 1280, 720);
+
+  // Decorative grid pattern
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.03)";
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 1280; i += 40) {
+    ctx.beginPath();
+    ctx.moveTo(i, 0);
+    ctx.lineTo(i, 720);
+    ctx.stroke();
+  }
+  for (let i = 0; i < 720; i += 40) {
+    ctx.beginPath();
+    ctx.moveTo(0, i);
+    ctx.lineTo(1280, i);
+    ctx.stroke();
+  }
+
+  // Accent glow circle
+  const radialGradient = ctx.createRadialGradient(640, 300, 50, 640, 300, 350);
+  radialGradient.addColorStop(0, "rgba(233, 69, 96, 0.15)");
+  radialGradient.addColorStop(1, "rgba(233, 69, 96, 0)");
+  ctx.fillStyle = radialGradient;
+  ctx.fillRect(0, 0, 1280, 720);
+
+  // News icon (simple camera/breaking shape)
+  ctx.fillStyle = "rgba(233, 69, 96, 0.8)";
+  ctx.beginPath();
+  ctx.arc(640, 260, 50, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 36px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("NEWS", 640, 272);
+
+  // Keyword from prompt (first 40 chars)
+  const shortPrompt = prompt.length > 60 ? prompt.substring(0, 60) + "..." : prompt;
+  ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+  ctx.font = "bold 28px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(shortPrompt, 640, 400);
+
+  // "AI 이미지 대체" label
+  ctx.fillStyle = "rgba(255, 255, 255, 0.4)";
+  ctx.font = "16px sans-serif";
+  ctx.fillText("API 할당량 초과 - 플레이스홀더 이미지", 640, 500);
+
+  return canvas.toDataURL("image/png");
+}
 
 /**
  * Generate TTS audio from narration text using Gemini TTS.
