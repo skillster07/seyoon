@@ -1,567 +1,558 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { v4 as uuidv4 } from 'uuid';
-import { analyzeScript, generateImageFromPrompt, generateVideo, generateSpeech, extendVideo } from './services/geminiService';
-import { Scene, AppStatus, AppView, Character, MediaVersion, AIStudio, TransitionType, Project, UserSettings } from './types';
-import { SceneCard } from './components/SceneCard';
-import { CharacterDB } from './components/CharacterDB';
-import { StoryWriter } from './components/StoryWriter';
-import { TimelineEditor } from './components/TimelineEditor';
-import { ProjectDashboard } from './components/ProjectDashboard';
-import { SettingsModal } from './components/SettingsModal';
-import { Clapperboard, Sparkles, AlertCircle, Trash2, ArrowRight, PenTool, Users, Layout, Layers, Key, Save, Upload, ArrowLeft, Download, Settings } from 'lucide-react';
+import React, { useState, useCallback } from "react";
+import { v4 as uuidv4 } from "uuid";
+import {
+  NewsItem,
+  PipelineState,
+  PipelineStep,
+  ProjectData,
+  AIStudio,
+} from "./types";
+import {
+  searchYesterdayNews,
+  analyzeAndStructureNews,
+  generateIntroOutroScripts,
+  getTodayDate,
+} from "./services/newsService";
+import {
+  generateNewsImage,
+  generateTTS,
+  generateNewsVideo,
+} from "./services/geminiService";
+import { PipelineProgress } from "./components/PipelineProgress";
+import { NewsCard } from "./components/NewsCard";
+import { PreviewPlayer } from "./components/PreviewPlayer";
+import {
+  Newspaper,
+  Rocket,
+  ImagePlus,
+  Volume2,
+  Play,
+  Download,
+  RefreshCw,
+  Calendar,
+  Zap,
+  Eye,
+  Loader2,
+} from "lucide-react";
 
 const App: React.FC = () => {
-  // --- Global State ---
-  const [hasVeoKey, setHasVeoKey] = useState(false);
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
-  const [userSettings, setUserSettings] = useState<UserSettings>({
-    defaultDuration: 5,
-    autoSave: true,
-    theme: 'dark',
-    supertoneApiKey: '2a6f8814df88b46e1beb2e227c00f6b8' // Default provided key
+  // Pipeline
+  const [pipeline, setPipeline] = useState<PipelineState>({
+    step: PipelineStep.IDLE,
+    progress: 0,
+    message: "",
   });
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
-  // --- Active Project State ---
-  const [currentView, setCurrentView] = useState<AppView>(AppView.STORY_WRITER);
-  const [script, setScript] = useState('');
-  const [status, setStatus] = useState<AppStatus>(AppStatus.IDLE);
-  const [scenes, setScenes] = useState<Scene[]>([]);
-  const [characters, setCharacters] = useState<Character[]>([]);
-  const [bgmUrl, setBgmUrl] = useState<string | undefined>(undefined);
-  const [bgmVersions, setBgmVersions] = useState<MediaVersion[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  // Project Data
+  const [project, setProject] = useState<ProjectData | null>(null);
+  const [newsItems, setNewsItems] = useState<NewsItem[]>([]);
+  const [introScript, setIntroScript] = useState("");
+  const [outroScript, setOutroScript] = useState("");
+  const [introAudioUrl, setIntroAudioUrl] = useState<string | undefined>();
+  const [outroAudioUrl, setOutroAudioUrl] = useState<string | undefined>();
 
-  // --- Load Data on Mount ---
-  useEffect(() => {
-    const savedProjects = localStorage.getItem('red_garden_projects');
-    const savedSettings = localStorage.getItem('red_garden_settings');
-    if (savedProjects) {
-      try {
-        setProjects(JSON.parse(savedProjects));
-      } catch (e) { console.error(e); }
-    }
-    if (savedSettings) {
-      try {
-        // Merge saved settings with defaults to ensure new keys exist
-        const parsed = JSON.parse(savedSettings);
-        setUserSettings(prev => ({ ...prev, ...parsed }));
-      } catch (e) { console.error(e); }
-    }
-  }, []);
+  // UI
+  const [showPreview, setShowPreview] = useState(false);
+  const [targetDate, setTargetDate] = useState(getTodayDate());
 
-  // --- Persist Data ---
-  useEffect(() => {
-    if (projects.length > 0) {
-      localStorage.setItem('red_garden_projects', JSON.stringify(projects));
-    }
-  }, [projects]);
-
-  useEffect(() => {
-    localStorage.setItem('red_garden_settings', JSON.stringify(userSettings));
-  }, [userSettings]);
-
-  // Check for Veo Key on Mount
-  useEffect(() => {
-    const checkKey = async () => {
-      const aistudio = (window as any).aistudio as AIStudio | undefined;
-      if (aistudio && aistudio.hasSelectedApiKey) {
-        const hasKey = await aistudio.hasSelectedApiKey();
-        setHasVeoKey(hasKey);
-      }
-    };
-    checkKey();
-  }, []);
-
-  const handleSelectKey = async () => {
-    const aistudio = (window as any).aistudio as AIStudio | undefined;
-    if (aistudio && aistudio.openSelectKey) {
-      await aistudio.openSelectKey();
-      setHasVeoKey(true);
-    }
-  };
-
-  const handleClearAllData = () => {
-    localStorage.removeItem('red_garden_projects');
-    localStorage.removeItem('red_garden_settings');
-    setProjects([]);
-    setActiveProjectId(null);
-    setUserSettings({ defaultDuration: 5, autoSave: true, theme: 'dark', supertoneApiKey: '' });
-    alert("초기화되었습니다.");
-  };
-
-  // --- Project Management Handlers ---
-
-  const handleCreateProject = (title: string) => {
-    const newProject: Project = {
-      id: uuidv4(),
-      title,
-      lastModified: Date.now(),
-      data: {
-        script: '',
-        characters: [],
-        scenes: [],
-        bgmUrl: undefined,
-        bgmVersions: []
-      }
-    };
-    setProjects(prev => [newProject, ...prev]);
-    handleSelectProject(newProject);
-  };
-
-  const handleSelectProject = (project: Project) => {
-    setActiveProjectId(project.id);
-    setScript(project.data.script);
-    setCharacters(project.data.characters);
-    setScenes(project.data.scenes);
-    setBgmUrl(project.data.bgmUrl);
-    setBgmVersions(project.data.bgmVersions);
-    setCurrentView(AppView.STORY_WRITER);
-    setStatus(AppStatus.IDLE);
-    setError(null);
-  };
-
-  const handleExitProject = () => {
-    if (activeProjectId) saveCurrentStateToProject();
-    setActiveProjectId(null);
-  };
-
-  const handleDeleteProject = (id: string) => {
-    setProjects(prev => {
-        const updated = prev.filter(p => p.id !== id);
-        if (updated.length === 0) localStorage.removeItem('red_garden_projects'); // Clean up if empty
-        else localStorage.setItem('red_garden_projects', JSON.stringify(updated)); // Force save
-        return updated;
+  // === Pipeline Step 1: Search News ===
+  const handleSearchNews = useCallback(async () => {
+    setPipeline({
+      step: PipelineStep.SEARCHING_NEWS,
+      progress: 10,
+      message: "Google 검색을 통해 어제의 뉴스를 수집하고 있습니다...",
     });
-    if (activeProjectId === id) setActiveProjectId(null);
-  };
-
-  const saveCurrentStateToProject = () => {
-    if (!activeProjectId) return;
-    setProjects(prev => prev.map(p => {
-      if (p.id === activeProjectId) {
-        return {
-          ...p,
-          lastModified: Date.now(),
-          data: {
-            script,
-            characters,
-            scenes,
-            bgmUrl,
-            bgmVersions
-          }
-        };
-      }
-      return p;
-    }));
-  };
-
-  // Auto-save logic (if enabled)
-  useEffect(() => {
-    if (activeProjectId && userSettings.autoSave) {
-        // Debounce save to avoid too many writes
-        const timer = setTimeout(() => {
-            saveCurrentStateToProject();
-        }, 2000);
-        return () => clearTimeout(timer);
-    }
-  }, [script, characters, scenes, bgmUrl]);
-
-  const handleManualSave = () => {
-    saveCurrentStateToProject();
-    alert("프로젝트가 브라우저에 저장되었습니다.");
-  };
-
-  const handleExportJSON = () => {
-    saveCurrentStateToProject();
-    const project = projects.find(p => p.id === activeProjectId);
-    if (!project) return;
-    const blob = new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${project.title.replace(/\s+/g, '_')}_${new Date().getTime()}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  };
-
-  const handleImportProject = (file: File) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const content = e.target?.result as string;
-        const projectData = JSON.parse(content);
-        if (!projectData.id || !projectData.data) throw new Error("Invalid format");
-        
-        const newProject = {
-          ...projectData,
-          id: uuidv4(),
-          title: projectData.title + " (Imported)"
-        };
-        setProjects(prev => [newProject, ...prev]);
-        alert("프로젝트를 가져왔습니다.");
-      } catch (err) {
-        alert("파일 형식이 올바르지 않습니다.");
-      }
-    };
-    reader.readAsText(file);
-  };
-
-  // --- Editor Handlers ---
-
-  const handleAnalyzeScript = async (inputScript?: string) => {
-    const scriptToAnalyze = inputScript || script;
-    if (!scriptToAnalyze.trim()) return;
-    
-    if (inputScript) {
-      setScript(inputScript);
-      setCurrentView(AppView.STORYBOARD);
-    }
-
-    setStatus(AppStatus.ANALYZING);
-    setError(null);
-    setScenes([]);
 
     try {
-      const analysisResults = await analyzeScript(scriptToAnalyze);
-      
-      const newScenes: Scene[] = analysisResults.map(item => ({
+      const rawNews = await searchYesterdayNews(targetDate);
+
+      setPipeline({
+        step: PipelineStep.ANALYZING,
+        progress: 40,
+        message: "AI가 TOP5 이슈를 선정하고 나레이션 대본을 작성 중입니다...",
+      });
+
+      const items = await analyzeAndStructureNews(rawNews, targetDate);
+
+      setPipeline({
+        step: PipelineStep.ANALYZING,
+        progress: 60,
+        message: "인트로/아웃트로 대본을 생성 중입니다...",
+      });
+
+      const { intro, outro } = await generateIntroOutroScripts(
+        items,
+        targetDate
+      );
+
+      setNewsItems(items);
+      setIntroScript(intro);
+      setOutroScript(outro);
+      setProject({
         id: uuidv4(),
-        originalText: item.original_text,
-        visualPrompt: item.visual_prompt,
-        imageVersions: [],
-        videoVersions: [],
-        audioVersions: [],
-        duration: userSettings.defaultDuration, // Use user setting
-        transition: 'fade', 
-        isGeneratingImage: false,
-        isGeneratingVideo: false,
-        isGeneratingAudio: false
-      }));
+        title: `어제의 이슈 TOP5 - ${getPreviousDate(targetDate)}`,
+        date: targetDate,
+        createdAt: Date.now(),
+        newsItems: items,
+        introScript: intro,
+        outroScript: outro,
+      });
 
-      setScenes(newScenes);
-      setStatus(AppStatus.READY);
+      setPipeline({
+        step: PipelineStep.REVIEW,
+        progress: 70,
+        message:
+          "뉴스 분석이 완료되었습니다. 내용을 검토하고 미디어를 생성하세요.",
+      });
     } catch (e: any) {
       console.error(e);
-      setError(e.message || "스크립트 분석에 실패했습니다. (JSON 파싱 오류 등)");
-      setStatus(AppStatus.IDLE);
+      setPipeline({
+        step: PipelineStep.IDLE,
+        progress: 0,
+        message: "",
+        error: e.message || "뉴스 검색에 실패했습니다.",
+      });
     }
-  };
+  }, [targetDate]);
 
-  const createVersion = (url: string): MediaVersion => ({
-    id: uuidv4(),
-    url,
-    timestamp: Date.now(),
-    label: new Date().toLocaleTimeString()
-  });
+  // === Update news item ===
+  const handleUpdateItem = useCallback((updated: NewsItem) => {
+    setNewsItems((prev) =>
+      prev.map((n) => (n.id === updated.id ? updated : n))
+    );
+  }, []);
 
-  const handleGenerateImage = async (id: string, prompt: string) => {
-    setScenes(prev => prev.map(scene => 
-      scene.id === id ? { ...scene, isGeneratingImage: true, error: undefined } : scene
-    ));
+  // === Generate Image for single item ===
+  const handleGenerateImage = useCallback(
+    async (id: string, prompt: string) => {
+      setNewsItems((prev) =>
+        prev.map((n) =>
+          n.id === id
+            ? { ...n, isGeneratingImage: true, error: undefined }
+            : n
+        )
+      );
 
-    try {
-      const imageUrl = await generateImageFromPrompt(prompt);
-      setScenes(prev => prev.map(scene => {
-        if (scene.id !== id) return scene;
-        const newVersion = createVersion(imageUrl);
-        return { 
-          ...scene, 
-          imageUrl, 
-          imageVersions: [newVersion, ...scene.imageVersions],
-          isGeneratingImage: false 
-        };
-      }));
-    } catch (e: any) {
-      setScenes(prev => prev.map(scene => 
-        scene.id === id ? { ...scene, isGeneratingImage: false, error: "이미지 생성 실패" } : scene
-      ));
+      try {
+        const imageUrl = await generateNewsImage(prompt);
+        setNewsItems((prev) =>
+          prev.map((n) =>
+            n.id === id ? { ...n, imageUrl, isGeneratingImage: false } : n
+          )
+        );
+      } catch (e: any) {
+        setNewsItems((prev) =>
+          prev.map((n) =>
+            n.id === id
+              ? {
+                  ...n,
+                  isGeneratingImage: false,
+                  error: "이미지 생성 실패: " + e.message,
+                }
+              : n
+          )
+        );
+      }
+    },
+    []
+  );
+
+  // === Generate Audio for single item ===
+  const handleGenerateAudio = useCallback(
+    async (id: string, text: string) => {
+      setNewsItems((prev) =>
+        prev.map((n) =>
+          n.id === id
+            ? { ...n, isGeneratingAudio: true, error: undefined }
+            : n
+        )
+      );
+
+      try {
+        const audioUrl = await generateTTS(text);
+        setNewsItems((prev) =>
+          prev.map((n) =>
+            n.id === id ? { ...n, audioUrl, isGeneratingAudio: false } : n
+          )
+        );
+      } catch (e: any) {
+        setNewsItems((prev) =>
+          prev.map((n) =>
+            n.id === id
+              ? {
+                  ...n,
+                  isGeneratingAudio: false,
+                  error: "TTS 생성 실패: " + e.message,
+                }
+              : n
+          )
+        );
+      }
+    },
+    []
+  );
+
+  // === Generate Video for single item ===
+  const handleGenerateVideo = useCallback(
+    async (id: string) => {
+      const item = newsItems.find((n) => n.id === id);
+      if (!item || !item.imageUrl) return;
+
+      setNewsItems((prev) =>
+        prev.map((n) =>
+          n.id === id
+            ? { ...n, isGeneratingVideo: true, error: undefined }
+            : n
+        )
+      );
+
+      try {
+        const { url, assetContext } = await generateNewsVideo(
+          item.imagePrompt,
+          item.imageUrl
+        );
+        setNewsItems((prev) =>
+          prev.map((n) =>
+            n.id === id
+              ? {
+                  ...n,
+                  videoUrl: url,
+                  videoAssetContext: assetContext,
+                  isGeneratingVideo: false,
+                }
+              : n
+          )
+        );
+      } catch (e: any) {
+        setNewsItems((prev) =>
+          prev.map((n) =>
+            n.id === id
+              ? {
+                  ...n,
+                  isGeneratingVideo: false,
+                  error: "영상 생성 실패: " + e.message,
+                }
+              : n
+          )
+        );
+      }
+    },
+    [newsItems]
+  );
+
+  // === Batch Generate: All Images ===
+  const handleGenerateAllImages = useCallback(async () => {
+    const itemsWithoutImages = newsItems.filter((n) => !n.imageUrl);
+    for (const item of itemsWithoutImages) {
+      await handleGenerateImage(item.id, item.imagePrompt);
     }
-  };
+  }, [newsItems, handleGenerateImage]);
 
-  const handleGenerateVideo = async (id: string) => {
-    if (!hasVeoKey) {
-      setIsSettingsOpen(true); // Open settings to select key
-      alert("영상 생성을 위해서는 유료 API Key가 필요합니다. 설정에서 키를 선택해주세요.");
-      return;
+  // === Batch Generate: All TTS ===
+  const handleGenerateAllAudio = useCallback(async () => {
+    const itemsWithoutAudio = newsItems.filter((n) => !n.audioUrl);
+
+    // Also generate intro/outro audio
+    if (introScript && !introAudioUrl) {
+      try {
+        const url = await generateTTS(introScript);
+        setIntroAudioUrl(url);
+      } catch (e) {
+        console.error("Intro TTS failed:", e);
+      }
     }
 
-    const scene = scenes.find(s => s.id === id);
-    if (!scene || !scene.imageUrl) return;
-
-    setScenes(prev => prev.map(s => 
-      s.id === id ? { ...s, isGeneratingVideo: true, error: undefined } : s
-    ));
-
-    try {
-      const { url: videoUrl, assetContext } = await generateVideo(scene.visualPrompt, scene.imageUrl);
-      
-      setScenes(prev => prev.map(s => {
-        if (s.id !== id) return s;
-        const newVersion = createVersion(videoUrl);
-        return { 
-          ...s, 
-          videoUrl, 
-          videoAssetContext: assetContext,
-          videoVersions: [newVersion, ...s.videoVersions],
-          isGeneratingVideo: false 
-        };
-      }));
-    } catch (e: any) {
-      console.error(e);
-      setScenes(prev => prev.map(s => 
-        s.id === id ? { ...s, isGeneratingVideo: false, error: "영상 생성 실패" } : s
-      ));
-    }
-  };
-
-  const handleExtendVideo = async (id: string) => {
-    if (!hasVeoKey) {
-      setIsSettingsOpen(true);
-      return;
+    for (const item of itemsWithoutAudio) {
+      await handleGenerateAudio(item.id, item.narrationScript);
     }
 
-    const scene = scenes.find(s => s.id === id);
-    if (!scene || !scene.videoAssetContext) {
-      alert("연장할 수 있는 원본 영상 정보가 없습니다.");
-      return;
+    if (outroScript && !outroAudioUrl) {
+      try {
+        const url = await generateTTS(outroScript);
+        setOutroAudioUrl(url);
+      } catch (e) {
+        console.error("Outro TTS failed:", e);
+      }
     }
+  }, [
+    newsItems,
+    introScript,
+    outroScript,
+    introAudioUrl,
+    outroAudioUrl,
+    handleGenerateAudio,
+  ]);
 
-    setScenes(prev => prev.map(s => 
-      s.id === id ? { ...s, isGeneratingVideo: true, error: undefined } : s
-    ));
+  // === Batch Generate: All Media ===
+  const handleGenerateAllMedia = useCallback(async () => {
+    setPipeline({
+      step: PipelineStep.GENERATING_MEDIA,
+      progress: 75,
+      message: "모든 이미지를 생성 중입니다...",
+    });
 
-    try {
-      const { url: videoUrl, assetContext } = await extendVideo(scene.visualPrompt, scene.videoAssetContext);
-      
-      setScenes(prev => prev.map(s => {
-        if (s.id !== id) return s;
-        const newVersion = createVersion(videoUrl);
-        return { 
-          ...s, 
-          videoUrl, 
-          videoAssetContext: assetContext, 
-          videoVersions: [newVersion, ...s.videoVersions],
-          isGeneratingVideo: false,
-          duration: s.duration + 5
-        };
-      }));
-    } catch (e: any) {
-      console.error(e);
-      setScenes(prev => prev.map(s => 
-        s.id === id ? { ...s, isGeneratingVideo: false, error: "영상 연장 실패" } : s
-      ));
-    }
-  };
+    await handleGenerateAllImages();
 
-  const handleGenerateAudio = async (id: string) => {
-    const scene = scenes.find(s => s.id === id);
-    if (!scene) return;
+    setPipeline({
+      step: PipelineStep.GENERATING_MEDIA,
+      progress: 85,
+      message: "모든 TTS 음성을 생성 중입니다...",
+    });
 
-    setScenes(prev => prev.map(s => 
-      s.id === id ? { ...s, isGeneratingAudio: true, error: undefined } : s
-    ));
+    await handleGenerateAllAudio();
 
-    try {
-      const audioUrl = await generateSpeech(scene.originalText);
-      setScenes(prev => prev.map(s => {
-        if (s.id !== id) return s;
-        const newVersion = createVersion(audioUrl);
-        return { 
-          ...s, 
-          audioUrl, 
-          audioVersions: [newVersion, ...s.audioVersions],
-          isGeneratingAudio: false 
-        };
-      }));
-    } catch (e: any) {
-      setScenes(prev => prev.map(s => 
-        s.id === id ? { ...s, isGeneratingAudio: false, error: "대사 생성 실패" } : s
-      ));
-    }
-  };
+    setPipeline({
+      step: PipelineStep.COMPLETE,
+      progress: 100,
+      message: "모든 미디어 생성이 완료되었습니다!",
+    });
+  }, [handleGenerateAllImages, handleGenerateAllAudio]);
 
-  const handleGenerateAll = async () => {
-    const scenesToGenerate = scenes.filter(s => !s.imageUrl);
-    if (scenesToGenerate.length === 0) return;
-    for (const scene of scenesToGenerate) {
-       await handleGenerateImage(scene.id, scene.visualPrompt);
-    }
-  };
-
-  const updatePrompt = (id: string, newPrompt: string) => {
-    setScenes(prev => prev.map(scene => 
-      scene.id === id ? { ...scene, visualPrompt: newPrompt } : scene
-    ));
-  };
-
-  const handleUpdateScene = (updatedScene: Scene) => {
-    setScenes(prev => prev.map(s => s.id === updatedScene.id ? updatedScene : s));
-  };
-
-  const handleAddBgmVersion = (url: string) => {
-    const newVersion = createVersion(url);
-    setBgmVersions(prev => [newVersion, ...prev]);
-    setBgmUrl(url);
-  };
-
+  // === Reset ===
   const handleReset = () => {
-    if (window.confirm("현재 프로젝트의 내용을 초기화하시겠습니까?")) {
-      setScript('');
-      setScenes([]);
-      setBgmUrl(undefined);
-      setBgmVersions([]);
-      setStatus(AppStatus.IDLE);
-      setError(null);
-    }
+    setPipeline({ step: PipelineStep.IDLE, progress: 0, message: "" });
+    setNewsItems([]);
+    setProject(null);
+    setIntroScript("");
+    setOutroScript("");
+    setIntroAudioUrl(undefined);
+    setOutroAudioUrl(undefined);
+    setShowPreview(false);
   };
 
-  const activeProjectTitle = projects.find(p => p.id === activeProjectId)?.title || 'Unsaved Project';
+  const isIdle = pipeline.step === PipelineStep.IDLE;
+  const hasNews = newsItems.length > 0;
 
   return (
-    <div className="min-h-screen bg-[#0f172a] text-gray-100 flex flex-col font-sans">
-      <SettingsModal 
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
-        settings={userSettings}
-        onSaveSettings={setUserSettings}
-        hasVeoKey={hasVeoKey}
-        onSelectVeoKey={handleSelectKey}
-        onClearAllData={handleClearAllData}
-      />
+    <div className="min-h-screen bg-[#0a0f1e] text-gray-100 font-sans">
+      {/* Header */}
+      <header className="bg-gray-900/80 backdrop-blur-md border-b border-gray-800 sticky top-0 z-50">
+        <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="bg-gradient-to-br from-red-600 to-orange-500 p-2 rounded-lg shadow-lg">
+              <Newspaper className="text-white" size={22} />
+            </div>
+            <div>
+              <h1 className="text-lg font-bold text-white leading-none">
+                뉴스 비디오 자동화
+              </h1>
+              <p className="text-xs text-gray-500">
+                어제의 이슈 TOP5 콘텐츠 생성기
+              </p>
+            </div>
+          </div>
 
-      {/* --- DASHBOARD VIEW --- */}
-      {!activeProjectId ? (
-        <ProjectDashboard 
-          projects={projects}
-          onCreateProject={handleCreateProject}
-          onSelectProject={handleSelectProject}
-          onDeleteProject={handleDeleteProject}
-          onImportProject={handleImportProject}
-        />
-      ) : (
-        /* --- EDITOR VIEW --- */
-        <>
-          <header className="bg-gray-900/90 backdrop-blur-md border-b border-gray-800 sticky top-0 z-50 shadow-lg">
-            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <button 
-                  onClick={handleExitProject}
-                  className="mr-2 text-gray-400 hover:text-white transition-colors"
-                  title="프로젝트 목록으로 돌아가기"
+          <div className="flex items-center gap-3">
+            {hasNews && (
+              <>
+                <button
+                  onClick={() => setShowPreview(!showPreview)}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-sm transition-colors border border-gray-700"
                 >
-                  <ArrowLeft size={20} />
+                  {showPreview ? <Eye size={16} /> : <Play size={16} />}
+                  {showPreview ? "편집 모드" : "미리보기"}
                 </button>
-                <div className="bg-primary-600 p-2 rounded-lg shadow-lg shadow-primary-600/30">
-                  <Clapperboard className="text-white" size={20} />
-                </div>
-                <div>
-                  <h1 className="text-sm text-gray-400 font-medium">붉은 정원 에피소드 메이커</h1>
-                  <p className="text-lg font-bold text-white leading-none">{activeProjectTitle}</p>
-                </div>
+                <button
+                  onClick={handleReset}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-sm transition-colors border border-gray-700"
+                >
+                  <RefreshCw size={16} /> 초기화
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-6xl mx-auto px-6 py-8">
+        {/* Pipeline Progress */}
+        {!isIdle && (
+          <div className="mb-8">
+            <PipelineProgress state={pipeline} />
+          </div>
+        )}
+
+        {/* === IDLE: Start Screen === */}
+        {isIdle && !hasNews && (
+          <div className="flex flex-col items-center justify-center min-h-[70vh]">
+            <div className="text-center mb-10">
+              <div className="inline-flex items-center justify-center w-20 h-20 rounded-2xl bg-gradient-to-br from-red-600 to-orange-500 mb-6 shadow-2xl shadow-red-500/20">
+                <Zap className="text-white" size={40} />
               </div>
-              
-              <div className="flex items-center gap-3">
-                <div className="flex items-center bg-gray-800 rounded-lg p-1 gap-1 border border-gray-700">
-                  <button onClick={handleManualSave} className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors" title="프로젝트 저장"><Save size={18} /></button>
-                  <button onClick={handleExportJSON} className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors" title="JSON 백업"><Download size={18} /></button>
+              <h2 className="text-4xl font-black text-white mb-3">
+                어제의 이슈 TOP5
+              </h2>
+              <p className="text-gray-400 text-lg max-w-md mx-auto">
+                AI가 어제의 핫이슈를 검색하고, 뉴스 영상 콘텐츠를 자동으로
+                생성합니다.
+              </p>
+            </div>
+
+            <div className="bg-gray-800/50 rounded-2xl p-8 border border-gray-700 w-full max-w-lg">
+              <div className="flex items-center gap-3 mb-6">
+                <Calendar size={20} className="text-blue-400" />
+                <label className="text-sm font-medium text-gray-300">
+                  기준 날짜 (오늘 기준으로 어제 뉴스를 검색합니다)
+                </label>
+              </div>
+              <input
+                type="date"
+                value={targetDate}
+                onChange={(e) => setTargetDate(e.target.value)}
+                className="w-full bg-gray-900 border border-gray-600 rounded-xl px-4 py-3 text-white mb-6 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              />
+
+              {pipeline.error && (
+                <div className="mb-4 p-3 bg-red-900/30 border border-red-800 rounded-lg text-red-300 text-sm">
+                  {pipeline.error}
                 </div>
+              )}
 
-                <div className="h-6 w-px bg-gray-700 mx-1"></div>
-                
-                <button 
-                  onClick={() => setIsSettingsOpen(true)}
-                  className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
-                  title="설정"
-                >
-                   <Settings size={20} />
-                </button>
+              <button
+                onClick={handleSearchNews}
+                className="w-full flex items-center justify-center gap-3 px-8 py-4 bg-gradient-to-r from-red-600 to-orange-500 hover:from-red-500 hover:to-orange-400 text-white rounded-xl font-bold text-lg shadow-lg shadow-red-500/30 hover:shadow-red-500/50 transition-all transform hover:scale-[1.02]"
+              >
+                <Rocket size={24} />
+                어제의 이슈 검색 시작
+              </button>
 
-                <div className="h-6 w-px bg-gray-700 mx-1"></div>
-
-                <nav className="flex items-center gap-1 bg-gray-800 p-1 rounded-lg">
-                  <button onClick={() => setCurrentView(AppView.CHARACTERS)} className={`flex items-center gap-2 px-3 md:px-4 py-1.5 rounded-md text-xs md:text-sm font-medium transition-all ${currentView === AppView.CHARACTERS ? 'bg-gray-700 text-white shadow' : 'text-gray-400 hover:text-white'}`}><Users size={16} /> <span className="hidden md:inline">캐릭터</span></button>
-                  <button onClick={() => setCurrentView(AppView.STORY_WRITER)} className={`flex items-center gap-2 px-3 md:px-4 py-1.5 rounded-md text-xs md:text-sm font-medium transition-all ${currentView === AppView.STORY_WRITER ? 'bg-gray-700 text-white shadow' : 'text-gray-400 hover:text-white'}`}><PenTool size={16} /> <span className="hidden md:inline">스토리</span></button>
-                  <button onClick={() => setCurrentView(AppView.STORYBOARD)} className={`flex items-center gap-2 px-3 md:px-4 py-1.5 rounded-md text-xs md:text-sm font-medium transition-all ${currentView === AppView.STORYBOARD ? 'bg-gray-700 text-white shadow' : 'text-gray-400 hover:text-white'}`}><Layout size={16} /> <span className="hidden md:inline">스토리보드</span></button>
-                  <button onClick={() => setCurrentView(AppView.TIMELINE)} className={`flex items-center gap-2 px-3 md:px-4 py-1.5 rounded-md text-xs md:text-sm font-medium transition-all ${currentView === AppView.TIMELINE ? 'bg-gray-700 text-white shadow' : 'text-gray-400 hover:text-white'}`}><Layers size={16} /> <span className="hidden md:inline">편집</span></button>
-                </nav>
+              <div className="mt-6 grid grid-cols-3 gap-4 text-center">
+                <div className="bg-gray-900/50 rounded-lg p-3">
+                  <p className="text-2xl font-bold text-blue-400">1</p>
+                  <p className="text-xs text-gray-500 mt-1">뉴스 검색</p>
+                </div>
+                <div className="bg-gray-900/50 rounded-lg p-3">
+                  <p className="text-2xl font-bold text-purple-400">2</p>
+                  <p className="text-xs text-gray-500 mt-1">AI 분석</p>
+                </div>
+                <div className="bg-gray-900/50 rounded-lg p-3">
+                  <p className="text-2xl font-bold text-green-400">3</p>
+                  <p className="text-xs text-gray-500 mt-1">영상 생성</p>
+                </div>
               </div>
             </div>
-          </header>
+          </div>
+        )}
 
-          <main className="flex-grow max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
-            {currentView === AppView.CHARACTERS && <CharacterDB characters={characters} setCharacters={setCharacters} />}
-            {currentView === AppView.STORY_WRITER && <StoryWriter characters={characters} onScriptGenerated={handleAnalyzeScript} />}
-            {currentView === AppView.TIMELINE && (
-              <TimelineEditor 
-                scenes={scenes} 
-                setScenes={setScenes}
-                bgmUrl={bgmUrl} 
-                setBgmUrl={setBgmUrl}
-                bgmVersions={bgmVersions}
-                onAddBgmVersion={handleAddBgmVersion}
-                onExtendVideo={handleExtendVideo}
-              />
-            )}
-            {currentView === AppView.STORYBOARD && (
-              <div className="animate-in fade-in duration-500">
-                {status === AppStatus.IDLE || status === AppStatus.ANALYZING ? (
-                  <div className="max-w-3xl mx-auto mt-4">
-                    <div className="text-center mb-8">
-                      <h2 className="text-3xl font-bold text-white mb-4">장면 생성 및 시각화</h2>
-                      <p className="text-gray-400">완성된 스크립트를 분석하여 스토리보드를 생성합니다.</p>
-                    </div>
-                    <div className="bg-gray-800 rounded-2xl shadow-xl p-2 border border-gray-700">
-                      <textarea value={script} onChange={(e) => setScript(e.target.value)} placeholder="여기에 스크립트를 입력하세요..." className="w-full h-64 bg-gray-900 rounded-xl p-6 text-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 resize-none" />
-                      <div className="flex justify-between items-center p-4">
-                        <span className="text-xs text-gray-500 font-medium">{script.length} 글자</span>
-                        <button onClick={() => handleAnalyzeScript()} disabled={!script.trim() || status === AppStatus.ANALYZING} className={`flex items-center gap-2 px-8 py-3 rounded-xl font-bold text-white transition-all transform hover:scale-105 ${!script.trim() || status === AppStatus.ANALYZING ? 'bg-gray-700 cursor-not-allowed text-gray-500' : 'bg-gradient-to-r from-primary-600 to-rose-600 shadow-lg shadow-primary-500/30 hover:shadow-primary-500/50'}`}>
-                            {status === AppStatus.ANALYZING ? <><Sparkles className="animate-spin" size={20} /> 분석 중...</> : <><Sparkles size={20} /> 시각화하기 <ArrowRight size={20} /></>}
-                        </button>
-                      </div>
-                    </div>
-                    {error && <div className="mt-4 p-4 bg-red-900/30 border border-red-800 rounded-xl flex items-center gap-3 text-red-200"><AlertCircle size={20} /><p>{error}</p></div>}
-                  </div>
-                ) : (
-                  <div>
-                    <div className="flex justify-between items-end mb-6">
-                        <div><h2 className="text-2xl font-bold text-white flex items-center gap-2"><Layout className="text-primary-500"/> 스토리보드 장면</h2><p className="text-gray-400 text-sm mt-1">프롬프트를 확인하고 이미지(Image), 영상(Veo), 대사(Supertone)를 생성하세요.</p></div>
-                        <div className="flex gap-2">
-                          <button onClick={handleReset} className="flex items-center gap-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg font-medium transition-colors"><Trash2 size={16} /> 초기화</button>
-                          <button onClick={handleGenerateAll} className="flex items-center gap-2 px-6 py-2 bg-primary-600 hover:bg-primary-500 text-white rounded-lg font-medium shadow-lg shadow-primary-500/20 transition-all"><Sparkles size={18} /> 누락된 이미지 생성</button>
-                        </div>
-                    </div>
-                    <div className="space-y-8 pb-20">
-                      {scenes.map((scene, index) => (
-                        <div key={scene.id} className="relative">
-                          <div className="absolute -left-3 md:-left-12 top-0 bottom-0 w-0.5 bg-gray-800 hidden md:block"></div>
-                          <div className="absolute -left-[19px] md:-left-[55px] top-6 w-8 h-8 rounded-full bg-gray-900 border-2 border-gray-700 flex items-center justify-center text-sm font-bold text-gray-500 z-10 hidden md:flex">{index + 1}</div>
-                          <SceneCard 
-                              scene={scene} 
-                              onGenerateImage={handleGenerateImage}
-                              onUpdatePrompt={updatePrompt}
-                              onGenerateVideo={handleGenerateVideo}
-                              onGenerateAudio={handleGenerateAudio}
-                              onUpdateScene={handleUpdateScene}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                    <div className="fixed bottom-8 right-8 z-50 animate-bounce">
-                        <button onClick={() => setCurrentView(AppView.TIMELINE)} className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white px-6 py-4 rounded-full shadow-2xl font-bold flex items-center gap-2 hover:scale-105 transition-transform"><Layers size={20} /> 타임라인 편집기로 이동</button>
-                    </div>
-                  </div>
-                )}
+        {/* === SEARCHING / ANALYZING === */}
+        {(pipeline.step === PipelineStep.SEARCHING_NEWS ||
+          pipeline.step === PipelineStep.ANALYZING) &&
+          !hasNews && (
+            <div className="flex flex-col items-center justify-center min-h-[50vh]">
+              <Loader2 size={48} className="animate-spin text-blue-400 mb-4" />
+              <p className="text-lg text-gray-300">{pipeline.message}</p>
+            </div>
+          )}
+
+        {/* === REVIEW / GENERATING / COMPLETE: News Cards === */}
+        {hasNews && !showPreview && (
+          <div className="space-y-6">
+            {/* Intro/Outro Scripts */}
+            <div className="bg-gray-800/50 rounded-xl border border-gray-700 p-5">
+              <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-3">
+                인트로 / 아웃트로
+              </h3>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs text-gray-500 mb-1 block">
+                    오프닝 나레이션
+                  </label>
+                  <textarea
+                    value={introScript}
+                    onChange={(e) => setIntroScript(e.target.value)}
+                    className="w-full bg-gray-900 rounded-lg p-3 text-sm text-gray-300 resize-none h-20 border border-gray-700 focus:border-blue-500 focus:outline-none"
+                  />
+                  {introAudioUrl && (
+                    <audio
+                      src={introAudioUrl}
+                      controls
+                      className="w-full h-8 mt-1"
+                      style={{ filter: "invert(1)" }}
+                    />
+                  )}
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500 mb-1 block">
+                    클로징 나레이션
+                  </label>
+                  <textarea
+                    value={outroScript}
+                    onChange={(e) => setOutroScript(e.target.value)}
+                    className="w-full bg-gray-900 rounded-lg p-3 text-sm text-gray-300 resize-none h-20 border border-gray-700 focus:border-blue-500 focus:outline-none"
+                  />
+                  {outroAudioUrl && (
+                    <audio
+                      src={outroAudioUrl}
+                      controls
+                      className="w-full h-8 mt-1"
+                      style={{ filter: "invert(1)" }}
+                    />
+                  )}
+                </div>
               </div>
-            )}
-          </main>
-        </>
-      )}
+            </div>
+
+            {/* Batch Action Buttons */}
+            <div className="flex gap-3 items-center">
+              <button
+                onClick={handleGenerateAllMedia}
+                className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white rounded-lg font-medium shadow-lg shadow-blue-500/20 transition-all"
+              >
+                <Zap size={18} /> 전체 미디어 일괄 생성
+              </button>
+              <button
+                onClick={handleGenerateAllImages}
+                className="flex items-center gap-2 px-4 py-2.5 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-600/40 rounded-lg text-sm transition-colors"
+              >
+                <ImagePlus size={16} /> 전체 이미지 생성
+              </button>
+              <button
+                onClick={handleGenerateAllAudio}
+                className="flex items-center gap-2 px-4 py-2.5 bg-purple-600/20 hover:bg-purple-600/30 text-purple-400 border border-purple-600/40 rounded-lg text-sm transition-colors"
+              >
+                <Volume2 size={16} /> 전체 TTS 생성
+              </button>
+            </div>
+
+            {/* News Cards */}
+            <div className="space-y-4">
+              {newsItems.map((item) => (
+                <NewsCard
+                  key={item.id}
+                  item={item}
+                  onUpdateItem={handleUpdateItem}
+                  onGenerateImage={handleGenerateImage}
+                  onGenerateAudio={handleGenerateAudio}
+                  onGenerateVideo={handleGenerateVideo}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* === PREVIEW MODE === */}
+        {hasNews && showPreview && (
+          <div className="max-w-4xl mx-auto">
+            <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
+              <Eye size={20} className="text-blue-400" />
+              콘텐츠 미리보기
+            </h2>
+            <PreviewPlayer
+              newsItems={newsItems}
+              introAudioUrl={introAudioUrl}
+              outroAudioUrl={outroAudioUrl}
+            />
+          </div>
+        )}
+      </main>
     </div>
   );
 };
+
+function getPreviousDate(dateStr: string): string {
+  const date = new Date(dateStr);
+  date.setDate(date.getDate() - 1);
+  return date.toISOString().split("T")[0];
+}
 
 export default App;

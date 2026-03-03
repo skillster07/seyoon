@@ -1,84 +1,70 @@
-export interface Character {
-  id: string;
-  name: string;
-  age: string;
-  description: string;
-  visualStyle: string; // Used for prompt generation
-  basePrompt: string; // Basic prompt structure (e.g., "A korean man wearing suit")
-  images: { [key: string]: string }; // Map key (main, anxious, etc) to URL
-}
+// === News Video Automation Types ===
 
-export interface MediaVersion {
+export interface NewsItem {
   id: string;
-  url: string;
-  timestamp: number;
-  label?: string;
-}
+  rank: number;
+  title: string;
+  summary: string;           // 2-3 sentence summary
+  narrationScript: string;   // Full narration script for TTS
+  keywords: string[];
+  imagePrompt: string;       // English prompt for image generation
+  source?: string;           // News source name
+  sourceUrl?: string;        // Original article URL
 
-export type TransitionType = 'none' | 'fade' | 'zoom';
-
-export interface Scene {
-  id: string;
-  originalText: string;
-  visualPrompt: string;
-  
-  // Active Media
+  // Generated Media
   imageUrl?: string;
-  videoUrl?: string; 
-  videoAssetContext?: any; // To store Veo operation/asset info for extension
   audioUrl?: string;
-  
-  // Versions / History
-  imageVersions: MediaVersion[];
-  videoVersions: MediaVersion[];
-  audioVersions: MediaVersion[];
+  videoUrl?: string;
+  videoAssetContext?: any;
 
-  // Playback Settings
-  duration: number; // Duration in seconds (default 5s)
-  transition: TransitionType; // Visual transition effect
-  
+  // Generation States
   isGeneratingImage: boolean;
-  isGeneratingVideo: boolean;
   isGeneratingAudio: boolean;
+  isGeneratingVideo: boolean;
   error?: string;
 }
 
-export interface ScriptAnalysisResponse {
-  original_text: string;
-  visual_prompt: string;
+export interface SearchResult {
+  title: string;
+  snippet: string;
+  url?: string;
+  source?: string;
+}
+
+export enum PipelineStep {
+  IDLE = 'IDLE',
+  SEARCHING_NEWS = 'SEARCHING_NEWS',
+  ANALYZING = 'ANALYZING',
+  REVIEW = 'REVIEW',
+  GENERATING_MEDIA = 'GENERATING_MEDIA',
+  COMPLETE = 'COMPLETE',
+}
+
+export interface PipelineState {
+  step: PipelineStep;
+  progress: number;        // 0-100
+  message: string;
+  error?: string;
+}
+
+export interface ProjectData {
+  id: string;
+  title: string;
+  date: string;            // Target date (YYYY-MM-DD)
+  createdAt: number;
+  newsItems: NewsItem[];
+  introScript?: string;    // Opening narration
+  outroScript?: string;    // Closing narration
+  introAudioUrl?: string;
+  outroAudioUrl?: string;
+  bgmUrl?: string;
 }
 
 export interface UserSettings {
-  defaultDuration: number;
-  autoSave: boolean;
-  theme: 'dark' | 'light';
-  supertoneApiKey?: string;
-}
-
-export interface Project {
-  id: string;
-  title: string;
-  lastModified: number; // timestamp
-  data: {
-    script: string;
-    characters: Character[];
-    scenes: Scene[];
-    bgmUrl?: string;
-    bgmVersions: MediaVersion[];
-  };
-}
-
-export enum AppStatus {
-  IDLE = 'IDLE',
-  ANALYZING = 'ANALYZING',
-  READY = 'READY',
-}
-
-export enum AppView {
-  CHARACTERS = 'CHARACTERS',
-  STORY_WRITER = 'STORY_WRITER',
-  STORYBOARD = 'STORYBOARD',
-  TIMELINE = 'TIMELINE',
+  geminiApiKey?: string;
+  ttsVoice: string;
+  defaultImageStyle: string;
+  autoGenerateMedia: boolean;
 }
 
 export interface AIStudio {
