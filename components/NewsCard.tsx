@@ -18,6 +18,9 @@ import {
   Hash,
   Play,
   Square,
+  Search,
+  Images,
+  Film,
 } from "lucide-react";
 
 interface Props {
@@ -26,6 +29,9 @@ interface Props {
   onGenerateImage: (id: string, prompt: string) => void;
   onGenerateAudio: (id: string, text: string) => void;
   onGenerateVideo: (id: string) => void;
+  onSearchStock?: (id: string, query: string) => void;
+  onSelectStockImage?: (id: string, imageUrl: string) => void;
+  onSelectStockVideo?: (id: string, videoUrl: string) => void;
 }
 
 export const NewsCard: React.FC<Props> = ({
@@ -34,12 +40,17 @@ export const NewsCard: React.FC<Props> = ({
   onGenerateImage,
   onGenerateAudio,
   onGenerateVideo,
+  onSearchStock,
+  onSelectStockImage,
+  onSelectStockVideo,
 }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [editScript, setEditScript] = useState(item.narrationScript);
   const [editPrompt, setEditPrompt] = useState(item.imagePrompt);
   const [showDetails, setShowDetails] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [showStockGallery, setShowStockGallery] = useState(false);
+  const [stockTab, setStockTab] = useState<"photos" | "videos">("photos");
 
   const handleBrowserTTS = () => {
     if (isSpeaking) {
@@ -71,6 +82,10 @@ export const NewsCard: React.FC<Props> = ({
     setEditPrompt(item.imagePrompt);
     setIsEditing(false);
   };
+
+  const hasStockPhotos = item.stockPhotos && item.stockPhotos.length > 0;
+  const hasStockVideos = item.stockVideos && item.stockVideos.length > 0;
+  const hasStockMedia = hasStockPhotos || hasStockVideos;
 
   const rankColors: Record<number, string> = {
     1: "from-red-600 to-orange-500",
@@ -127,6 +142,7 @@ export const NewsCard: React.FC<Props> = ({
               src={item.imageUrl}
               alt={item.title}
               className="w-full h-full object-cover"
+              crossOrigin="anonymous"
             />
           ) : (
             <div className="w-full h-full flex items-center justify-center text-gray-600">
@@ -136,6 +152,11 @@ export const NewsCard: React.FC<Props> = ({
           {item.isGeneratingImage && (
             <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
               <Loader2 size={24} className="animate-spin text-blue-400" />
+            </div>
+          )}
+          {item.isSearchingStock && (
+            <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
+              <Loader2 size={24} className="animate-spin text-teal-400" />
             </div>
           )}
         </div>
@@ -236,11 +257,12 @@ export const NewsCard: React.FC<Props> = ({
               src={item.videoUrl}
               controls
               className="w-full h-20 mt-2 rounded-lg"
+              crossOrigin="anonymous"
             />
           )}
 
           {/* Action Buttons */}
-          <div className="flex gap-2 mt-3">
+          <div className="flex flex-wrap gap-2 mt-3">
             <button
               onClick={() => setIsEditing(true)}
               disabled={isEditing}
@@ -248,6 +270,23 @@ export const NewsCard: React.FC<Props> = ({
             >
               <Edit3 size={12} /> 편집
             </button>
+            {onSearchStock && (
+              <button
+                onClick={() => {
+                  onSearchStock(item.id, item.stockSearchQuery);
+                  setShowStockGallery(true);
+                }}
+                disabled={item.isSearchingStock}
+                className="px-3 py-1.5 bg-teal-600/20 hover:bg-teal-600/30 text-teal-400 border border-teal-600/40 rounded-lg text-xs flex items-center gap-1 disabled:opacity-50 transition-colors"
+              >
+                {item.isSearchingStock ? (
+                  <Loader2 size={12} className="animate-spin" />
+                ) : (
+                  <Search size={12} />
+                )}
+                자료화면
+              </button>
+            )}
             <button
               onClick={() => onGenerateImage(item.id, item.imagePrompt)}
               disabled={item.isGeneratingImage}
@@ -258,7 +297,7 @@ export const NewsCard: React.FC<Props> = ({
               ) : (
                 <ImagePlus size={12} />
               )}
-              이미지
+              AI 이미지
             </button>
             <button
               onClick={() => onGenerateAudio(item.id, item.narrationScript)}
@@ -276,7 +315,7 @@ export const NewsCard: React.FC<Props> = ({
               onClick={() => onGenerateVideo(item.id)}
               disabled={item.isGeneratingVideo || !item.imageUrl}
               className="px-3 py-1.5 bg-green-600/20 hover:bg-green-600/30 text-green-400 border border-green-600/40 rounded-lg text-xs flex items-center gap-1 disabled:opacity-50 transition-colors"
-              title={!item.imageUrl ? "이미지를 먼저 생성하세요" : ""}
+              title={!item.imageUrl ? "이미지를 먼저 선택하세요" : ""}
             >
               {item.isGeneratingVideo ? (
                 <Loader2 size={12} className="animate-spin" />
@@ -287,11 +326,131 @@ export const NewsCard: React.FC<Props> = ({
             </button>
           </div>
 
+          {/* Stock Gallery Toggle */}
+          {hasStockMedia && (
+            <button
+              onClick={() => setShowStockGallery(!showStockGallery)}
+              className="mt-2 text-xs text-teal-400 hover:text-teal-300 flex items-center gap-1"
+            >
+              {showStockGallery ? (
+                <ChevronUp size={12} />
+              ) : (
+                <ChevronDown size={12} />
+              )}
+              자료화면 갤러리 ({item.stockPhotos?.length || 0}장 /{" "}
+              {item.stockVideos?.length || 0}편)
+            </button>
+          )}
+
           {item.error && (
             <p className="text-xs text-red-400 mt-2">{item.error}</p>
           )}
         </div>
       </div>
+
+      {/* Stock Media Gallery */}
+      {showStockGallery && hasStockMedia && (
+        <div className="px-5 pb-4 border-t border-gray-700 pt-4">
+          {/* Tabs */}
+          <div className="flex gap-2 mb-3">
+            <button
+              onClick={() => setStockTab("photos")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-colors ${
+                stockTab === "photos"
+                  ? "bg-teal-600 text-white"
+                  : "bg-gray-700 text-gray-400 hover:text-gray-300"
+              }`}
+            >
+              <Images size={12} /> 사진 ({item.stockPhotos?.length || 0})
+            </button>
+            <button
+              onClick={() => setStockTab("videos")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-colors ${
+                stockTab === "videos"
+                  ? "bg-teal-600 text-white"
+                  : "bg-gray-700 text-gray-400 hover:text-gray-300"
+              }`}
+            >
+              <Film size={12} /> 영상 ({item.stockVideos?.length || 0})
+            </button>
+          </div>
+
+          {/* Photo Grid */}
+          {stockTab === "photos" && hasStockPhotos && (
+            <div className="grid grid-cols-3 gap-2">
+              {item.stockPhotos!.map((photo) => (
+                <button
+                  key={photo.id}
+                  onClick={() =>
+                    onSelectStockImage?.(item.id, photo.url)
+                  }
+                  className={`relative rounded-lg overflow-hidden border-2 transition-all hover:scale-[1.02] ${
+                    item.imageUrl === photo.url
+                      ? "border-teal-400 shadow-lg shadow-teal-400/20"
+                      : "border-gray-700 hover:border-gray-500"
+                  }`}
+                >
+                  <img
+                    src={photo.thumbnail}
+                    alt={photo.alt}
+                    className="w-full h-20 object-cover"
+                    loading="lazy"
+                  />
+                  {item.imageUrl === photo.url && (
+                    <div className="absolute top-1 right-1 bg-teal-500 rounded-full p-0.5">
+                      <Check size={10} className="text-white" />
+                    </div>
+                  )}
+                  <p className="absolute bottom-0 left-0 right-0 bg-black/60 text-[10px] text-gray-300 px-1 py-0.5 truncate">
+                    {photo.photographer}
+                  </p>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Video Grid */}
+          {stockTab === "videos" && hasStockVideos && (
+            <div className="grid grid-cols-3 gap-2">
+              {item.stockVideos!.map((video) => (
+                <button
+                  key={video.id}
+                  onClick={() =>
+                    onSelectStockVideo?.(item.id, video.url)
+                  }
+                  className={`relative rounded-lg overflow-hidden border-2 transition-all hover:scale-[1.02] ${
+                    item.videoUrl === video.url
+                      ? "border-teal-400 shadow-lg shadow-teal-400/20"
+                      : "border-gray-700 hover:border-gray-500"
+                  }`}
+                >
+                  <img
+                    src={video.thumbnail}
+                    alt="stock video"
+                    className="w-full h-20 object-cover"
+                    loading="lazy"
+                  />
+                  {item.videoUrl === video.url && (
+                    <div className="absolute top-1 right-1 bg-teal-500 rounded-full p-0.5">
+                      <Check size={10} className="text-white" />
+                    </div>
+                  )}
+                  <div className="absolute bottom-0 left-0 right-0 bg-black/60 flex items-center justify-between px-1 py-0.5">
+                    <Play size={10} className="text-white" />
+                    <span className="text-[10px] text-gray-300">
+                      {video.duration}s
+                    </span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          <p className="text-[10px] text-gray-600 mt-2">
+            Powered by Pexels - 무료 스톡 미디어
+          </p>
+        </div>
+      )}
     </div>
   );
 };

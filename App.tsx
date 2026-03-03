@@ -21,6 +21,7 @@ import {
   playBrowserTTS,
   stopBrowserTTS,
 } from "./services/geminiService";
+import { searchStockMedia } from "./services/stockMediaService";
 import { PipelineProgress } from "./components/PipelineProgress";
 import { NewsCard } from "./components/NewsCard";
 import { PreviewPlayer } from "./components/PreviewPlayer";
@@ -36,6 +37,7 @@ import {
   Zap,
   Eye,
   Loader2,
+  Search,
 } from "lucide-react";
 
 const App: React.FC = () => {
@@ -101,11 +103,39 @@ const App: React.FC = () => {
         outroScript: outro,
       });
 
+      // Auto-search stock media for each news item
+      if (process.env.PEXELS_API_KEY) {
+        setPipeline({
+          step: PipelineStep.ANALYZING,
+          progress: 65,
+          message: "스톡 자료 이미지/영상을 검색하고 있습니다...",
+        });
+
+        const updatedItems = [...items];
+        for (let i = 0; i < updatedItems.length; i++) {
+          try {
+            const { photos, videos } = await searchStockMedia(
+              updatedItems[i].stockSearchQuery
+            );
+            updatedItems[i] = {
+              ...updatedItems[i],
+              stockPhotos: photos,
+              stockVideos: videos,
+              // Auto-select first photo as default image
+              imageUrl: photos.length > 0 ? photos[0].url : undefined,
+            };
+          } catch (e) {
+            console.warn(`Stock search failed for item ${i + 1}:`, e);
+          }
+        }
+        setNewsItems(updatedItems);
+      }
+
       setPipeline({
         step: PipelineStep.REVIEW,
         progress: 70,
         message:
-          "뉴스 분석이 완료되었습니다. 내용을 검토하고 미디어를 생성하세요.",
+          "뉴스 분석이 완료되었습니다. 자료 이미지를 선택하고 미디어를 생성하세요.",
       });
     } catch (e: any) {
       console.error(e);
@@ -122,6 +152,48 @@ const App: React.FC = () => {
   const handleUpdateItem = useCallback((updated: NewsItem) => {
     setNewsItems((prev) =>
       prev.map((n) => (n.id === updated.id ? updated : n))
+    );
+  }, []);
+
+  // === Search stock media for single item ===
+  const handleSearchStock = useCallback(async (id: string, query: string) => {
+    setNewsItems((prev) =>
+      prev.map((n) =>
+        n.id === id ? { ...n, isSearchingStock: true, error: undefined } : n
+      )
+    );
+
+    try {
+      const { photos, videos } = await searchStockMedia(query);
+      setNewsItems((prev) =>
+        prev.map((n) =>
+          n.id === id
+            ? { ...n, stockPhotos: photos, stockVideos: videos, isSearchingStock: false }
+            : n
+        )
+      );
+    } catch (e: any) {
+      setNewsItems((prev) =>
+        prev.map((n) =>
+          n.id === id
+            ? { ...n, isSearchingStock: false, error: "스톡 검색 실패: " + e.message }
+            : n
+        )
+      );
+    }
+  }, []);
+
+  // === Select stock photo as image ===
+  const handleSelectStockImage = useCallback((id: string, imageUrl: string) => {
+    setNewsItems((prev) =>
+      prev.map((n) => (n.id === id ? { ...n, imageUrl } : n))
+    );
+  }, []);
+
+  // === Select stock video ===
+  const handleSelectStockVideo = useCallback((id: string, videoUrl: string) => {
+    setNewsItems((prev) =>
+      prev.map((n) => (n.id === id ? { ...n, videoUrl } : n))
     );
   }, []);
 
@@ -502,7 +574,7 @@ const App: React.FC = () => {
             </div>
 
             {/* Batch Action Buttons */}
-            <div className="flex gap-3 items-center">
+            <div className="flex flex-wrap gap-3 items-center">
               <button
                 onClick={handleGenerateAllMedia}
                 className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white rounded-lg font-medium shadow-lg shadow-blue-500/20 transition-all"
@@ -510,10 +582,20 @@ const App: React.FC = () => {
                 <Zap size={18} /> 전체 미디어 일괄 생성
               </button>
               <button
+                onClick={async () => {
+                  for (const item of newsItems) {
+                    await handleSearchStock(item.id, item.stockSearchQuery);
+                  }
+                }}
+                className="flex items-center gap-2 px-4 py-2.5 bg-teal-600/20 hover:bg-teal-600/30 text-teal-400 border border-teal-600/40 rounded-lg text-sm transition-colors"
+              >
+                <Search size={16} /> 전체 자료화면 검색
+              </button>
+              <button
                 onClick={handleGenerateAllImages}
                 className="flex items-center gap-2 px-4 py-2.5 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-600/40 rounded-lg text-sm transition-colors"
               >
-                <ImagePlus size={16} /> 전체 이미지 생성
+                <ImagePlus size={16} /> 전체 AI 이미지 생성
               </button>
               <button
                 onClick={handleGenerateAllAudio}
@@ -533,6 +615,9 @@ const App: React.FC = () => {
                   onGenerateImage={handleGenerateImage}
                   onGenerateAudio={handleGenerateAudio}
                   onGenerateVideo={handleGenerateVideo}
+                  onSearchStock={handleSearchStock}
+                  onSelectStockImage={handleSelectStockImage}
+                  onSelectStockVideo={handleSelectStockVideo}
                 />
               ))}
             </div>

@@ -8,10 +8,16 @@ export interface NewsItem {
   narrationScript: string;   // Full narration script for TTS
   keywords: string[];
   imagePrompt: string;       // English prompt for image generation
+  stockSearchQuery: string;  // English query for stock photo/video search
   source?: string;           // News source name
   sourceUrl?: string;        // Original article URL
 
-  // Generated Media
+  // Stock Media (from Pexels)
+  stockPhotos?: import("./services/stockMediaService").StockPhoto[];
+  stockVideos?: import("./services/stockMediaService").StockVideo[];
+  isSearchingStock: boolean;
+
+  // Generated/Selected Media
   imageUrl?: string;
   audioUrl?: string;
   videoUrl?: string;

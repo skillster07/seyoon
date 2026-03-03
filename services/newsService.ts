@@ -81,6 +81,11 @@ export const analyzeAndStructureNews = async (
           description:
             "뉴스 내용을 시각적으로 표현하는 이미지 생성 프롬프트 (영어). 뉴스 특성에 맞는 사실적이고 저널리스틱한 이미지. 특정 실존 인물의 얼굴은 포함하지 마세요.",
         },
+        stock_search_query: {
+          type: Type.STRING,
+          description:
+            "스톡 사진/영상 검색용 영어 키워드 (2-4단어). 뉴스 주제와 관련된 일반적인 장면을 검색할 수 있는 키워드. 예: 'stock market trading floor', 'heavy rain flooding city', 'parliament government building'",
+        },
         source: {
           type: Type.STRING,
           description: "뉴스 출처 (언론사명)",
@@ -93,6 +98,7 @@ export const analyzeAndStructureNews = async (
         "narration_script",
         "keywords",
         "image_prompt",
+        "stock_search_query",
       ],
     },
   };
@@ -123,6 +129,12 @@ ${rawNewsData}
 4. 실존 인물의 얼굴 묘사 금지 - 대신 실루엣, 상징물, 장소 등으로 표현
 5. 16:9 비율에 적합한 구도
 
+[스톡 검색 키워드 규칙]
+1. 영어 2-4단어로 작성
+2. 스톡 사진/영상 사이트에서 검색하기 좋은 일반적인 장면 키워드
+3. 뉴스 내용의 핵심 시각적 요소를 반영
+4. 예시: "stock market crash", "heavy rain flood", "semiconductor factory", "parliament politics Korea"
+
 정확히 5개의 뉴스 항목을 반환하세요.`,
     config: {
       responseMimeType: "application/json",
@@ -145,6 +157,7 @@ ${rawNewsData}
     narration_script: string;
     keywords: string[];
     image_prompt: string;
+    stock_search_query: string;
     source?: string;
   }>;
 
@@ -156,7 +169,9 @@ ${rawNewsData}
     narrationScript: item.narration_script,
     keywords: item.keywords,
     imagePrompt: item.image_prompt,
+    stockSearchQuery: item.stock_search_query || item.keywords.slice(0, 2).join(" "),
     source: item.source,
+    isSearchingStock: false,
     isGeneratingImage: false,
     isGeneratingAudio: false,
     isGeneratingVideo: false,
