@@ -8,19 +8,12 @@ export default defineConfig(({ mode }) => {
       server: {
         port: 3000,
         host: '0.0.0.0',
-        headers: {
-          // Required for FFmpeg.wasm SharedArrayBuffer support
-          'Cross-Origin-Opener-Policy': 'same-origin',
-          'Cross-Origin-Embedder-Policy': 'require-corp',
-        },
       },
       plugins: [react()],
-      optimizeDeps: {
-        exclude: ['@ffmpeg/ffmpeg', '@ffmpeg/util'],
-      },
       define: {
         'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)
+        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+        'process.env.PEXELS_API_KEY': JSON.stringify(env.PEXELS_API_KEY),
       },
       resolve: {
         alias: {
