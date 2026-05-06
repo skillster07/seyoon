@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { analyzeScript, generateImageFromPrompt, generateVideo, generateSpeech, extendVideo } from './services/geminiService';
-import { Scene, AppStatus, AppView, Character, MediaVersion, AIStudio, TransitionType, Project, UserSettings } from './types';
+import { Scene, AppStatus, AppView, Character, MediaVersion, AIStudio, TransitionType, Project, UserSettings, LayerComposition } from './types';
 import { SceneCard } from './components/SceneCard';
 import { CharacterDB } from './components/CharacterDB';
 import { StoryWriter } from './components/StoryWriter';
 import { TimelineEditor } from './components/TimelineEditor';
 import { ProjectDashboard } from './components/ProjectDashboard';
 import { SettingsModal } from './components/SettingsModal';
+import { MagicLayerEditor } from './components/MagicLayerEditor';
 import { Clapperboard, Sparkles, AlertCircle, Trash2, ArrowRight, PenTool, Users, Layout, Layers, Key, Save, Upload, ArrowLeft, Download, Settings } from 'lucide-react';
 
 const App: React.FC = () => {
@@ -32,6 +33,7 @@ const App: React.FC = () => {
   const [bgmUrl, setBgmUrl] = useState<string | undefined>(undefined);
   const [bgmVersions, setBgmVersions] = useState<MediaVersion[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [magicLayerSceneId, setMagicLayerSceneId] = useState<string | null>(null);
 
   // --- Load Data on Mount ---
   useEffect(() => {
@@ -402,6 +404,31 @@ const App: React.FC = () => {
     setScenes(prev => prev.map(s => s.id === updatedScene.id ? updatedScene : s));
   };
 
+  const handleOpenMagicLayer = (sceneId: string) => {
+    setMagicLayerSceneId(sceneId);
+  };
+
+  const handleSaveMagicLayer = (newImageDataUrl: string, composition: LayerComposition) => {
+    const sceneId = magicLayerSceneId;
+    if (!sceneId) return;
+    setScenes(prev => prev.map(s => {
+      if (s.id !== sceneId) return s;
+      const newVersion: MediaVersion = {
+        id: uuidv4(),
+        url: newImageDataUrl,
+        timestamp: Date.now(),
+        label: '매직 레이어',
+      };
+      return {
+        ...s,
+        imageUrl: newImageDataUrl,
+        imageVersions: [newVersion, ...s.imageVersions],
+        magicLayerComposition: composition,
+      };
+    }));
+    setMagicLayerSceneId(null);
+  };
+
   const handleAddBgmVersion = (url: string) => {
     const newVersion = createVersion(url);
     setBgmVersions(prev => [newVersion, ...prev]);
@@ -421,9 +448,11 @@ const App: React.FC = () => {
 
   const activeProjectTitle = projects.find(p => p.id === activeProjectId)?.title || 'Unsaved Project';
 
+  const magicLayerScene = magicLayerSceneId ? scenes.find(s => s.id === magicLayerSceneId) : null;
+
   return (
     <div className="min-h-screen bg-[#0f172a] text-gray-100 flex flex-col font-sans">
-      <SettingsModal 
+      <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         settings={userSettings}
@@ -432,6 +461,14 @@ const App: React.FC = () => {
         onSelectVeoKey={handleSelectKey}
         onClearAllData={handleClearAllData}
       />
+
+      {magicLayerScene && (
+        <MagicLayerEditor
+          scene={magicLayerScene}
+          onClose={() => setMagicLayerSceneId(null)}
+          onSave={handleSaveMagicLayer}
+        />
+      )}
 
       {/* --- DASHBOARD VIEW --- */}
       {!activeProjectId ? (
@@ -539,13 +576,14 @@ const App: React.FC = () => {
                         <div key={scene.id} className="relative">
                           <div className="absolute -left-3 md:-left-12 top-0 bottom-0 w-0.5 bg-gray-800 hidden md:block"></div>
                           <div className="absolute -left-[19px] md:-left-[55px] top-6 w-8 h-8 rounded-full bg-gray-900 border-2 border-gray-700 flex items-center justify-center text-sm font-bold text-gray-500 z-10 hidden md:flex">{index + 1}</div>
-                          <SceneCard 
-                              scene={scene} 
+                          <SceneCard
+                              scene={scene}
                               onGenerateImage={handleGenerateImage}
                               onUpdatePrompt={updatePrompt}
                               onGenerateVideo={handleGenerateVideo}
                               onGenerateAudio={handleGenerateAudio}
                               onUpdateScene={handleUpdateScene}
+                              onOpenMagicLayer={handleOpenMagicLayer}
                           />
                         </div>
                       ))}

@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import { Scene } from '../types';
-import { Image, RefreshCw, Wand2, Edit3, Save, Film, Mic, Play, ChevronDown, History } from 'lucide-react';
+import { Image, RefreshCw, Wand2, Edit3, Save, Film, Mic, Play, ChevronDown, History, Layers } from 'lucide-react';
 
 interface SceneCardProps {
   scene: Scene;
@@ -9,15 +9,17 @@ interface SceneCardProps {
   onGenerateVideo: (id: string) => void;
   onGenerateAudio: (id: string) => void;
   onUpdateScene: (scene: Scene) => void;
+  onOpenMagicLayer?: (id: string) => void;
 }
 
-export const SceneCard: React.FC<SceneCardProps> = ({ 
-  scene, 
-  onGenerateImage, 
-  onUpdatePrompt, 
+export const SceneCard: React.FC<SceneCardProps> = ({
+  scene,
+  onGenerateImage,
+  onUpdatePrompt,
   onGenerateVideo,
   onGenerateAudio,
-  onUpdateScene
+  onUpdateScene,
+  onOpenMagicLayer,
 }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [editedPrompt, setEditedPrompt] = useState(scene.visualPrompt);
@@ -95,7 +97,7 @@ export const SceneCard: React.FC<SceneCardProps> = ({
         </div>
 
         {/* Action Buttons */}
-        <div className="mt-6 pt-4 border-t border-gray-700 grid grid-cols-2 lg:grid-cols-3 gap-2">
+        <div className="mt-6 pt-4 border-t border-gray-700 grid grid-cols-2 lg:grid-cols-4 gap-2">
           {/* Image Gen */}
           <button
             onClick={handleGenerateClick}
@@ -105,6 +107,18 @@ export const SceneCard: React.FC<SceneCardProps> = ({
           >
             {scene.isGeneratingImage ? <RefreshCw className="animate-spin" size={14}/> : <Image size={14} />}
             {scene.imageUrl ? '이미지 재생성' : '이미지 생성'}
+          </button>
+
+          {/* Magic Layer */}
+          <button
+            onClick={() => scene.imageUrl && onOpenMagicLayer && onOpenMagicLayer(scene.id)}
+            disabled={!scene.imageUrl || !onOpenMagicLayer}
+            className={`flex items-center justify-center gap-2 px-3 py-2 rounded-lg font-medium text-xs transition-all
+              ${!scene.imageUrl ? 'bg-gray-700 text-gray-500 opacity-50' : 'bg-fuchsia-900/50 hover:bg-fuchsia-800 text-fuchsia-200 border border-fuchsia-800'}`}
+            title="이미지를 객체별 레이어로 분리해 편집"
+          >
+            <Layers size={14} />
+            매직 레이어
           </button>
 
           {/* Video Gen with History */}
