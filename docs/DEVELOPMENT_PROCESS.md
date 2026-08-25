@@ -76,6 +76,17 @@ Native CTest 타깃은 Release 빌드에서도 `NDEBUG`를 해제하여 assertio
 - timestamp가 단조 증가하고 duration이 60p이며 프레임 내용이 변화함
 - 제거 명령이 PnP 장치와 설정을 먼저 지운 뒤 COM 서버를 제거함
 
+### Gate W4b-1 — 사용자 세션 엔진 호스트
+
+통과 기준:
+
+- 관리자 권한이나 카메라 초기화 없이 별도 `vividcam_engine`이 장시간 실행됨
+- Created → Starting → Running → Stopping → Stopped 전환과 첫 종료 사유가 유지됨
+- steady clock heartbeat 순번·uptime·누락 interval이 단조 증가함
+- 제한 시간 smoke가 5초 안에 종료 코드 0으로 끝남
+- Windows Ctrl+C와 portable SIGINT·SIGTERM 처리기는 플래그만 기록하고 엔진 루프가 정상 종료함
+- Frame Server IPC 전에는 텔레메트리가 `frame_transport=unavailable`을 명시함
+
 ### Gate W4b — 방송 앱 가상 카메라 수신
 
 통과 기준:
@@ -128,11 +139,11 @@ Error code and full log:
 
 ## 현재 마일스톤
 
-- 2026-08-26 로컬 완료: W1 최선 60 FPS 캡처, W2 GPU surface, W3 1080p60 오프스크린 합성·NV12 변환, W4a COM activation·등록 수명주기, W4b-0 등록 소스 1080p60 테스트 패턴 수신
-- 검증 근거: `docs/validation/WINDOWS_W1_W4A_2026-08-26.md`, `docs/validation/WINDOWS_W4B0_2026-08-26.md`
+- 2026-08-26 로컬 완료: W1 최선 60 FPS 캡처, W2 GPU surface, W3 1080p60 오프스크린 합성·NV12 변환, W4a COM activation·등록 수명주기, W4b-0 등록 소스 1080p60 테스트 패턴 수신 항목, W4b-1 일반 사용자 엔진 host bounded·Ctrl+C 종료
+- 검증 근거: `docs/validation/WINDOWS_W1_W4A_2026-08-26.md`, `docs/validation/WINDOWS_W4B0_2026-08-26.md`, `docs/validation/WINDOWS_W4B1_ENGINE_HOST_2026-08-26.md`
 - 입력 한계: 현재 캡처보드 입력은 720×480 60 FPS이며 네이티브 1080p60 입력은 별도 검증 필요
-- 현재 핵심 공백: 진단 프로세스의 producer와 Frame Server가 활성화한 Media Source 사이 프레임 브리지가 없음
+- 현재 핵심 공백: 사용자 세션 엔진과 Frame Server가 활성화한 Media Source 사이 control·프레임 브리지가 없음
 - 로컬 후속: Windows 재부팅 뒤 W4b-0 영구 등록·재수신 확인
-- 클라우드 다음 범위: 장시간 엔진 호스트 → CPU latest-frame IPC → D3D11 공유 텍스처 IPC
+- 클라우드 다음 범위: versioned control·heartbeat → CPU latest-frame IPC → D3D11 공유 텍스처 IPC
 - 로컬 다음 상태: OBS에서 실제 등록 장치의 테스트 패턴 수신 후 SOOP·TikTok LIVE Studio까지 1080p60 W4b 확장
 - 병행 범위: D3D11 이미지·텍스트 렌더러, 데스크톱 UI bridge, 실제 1080p60 입력 및 장치 매트릭스

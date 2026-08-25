@@ -11,6 +11,8 @@ if(MSVC)
 endif()
 
 add_library(vividcam_core
+  src/engine_host.cpp
+  src/engine_options.cpp
   src/output_profile.cpp
   src/pixel_conversion.cpp
   src/frame_scheduler.cpp
@@ -77,6 +79,14 @@ target_include_directories(vividcam_platform PUBLIC include)
 add_executable(vividcam_diagnostics src/diagnostics_main.cpp)
 target_link_libraries(vividcam_diagnostics PRIVATE vividcam_core vividcam_platform)
 
+add_executable(vividcam_engine src/engine_main.cpp)
+target_link_libraries(vividcam_engine PRIVATE vividcam_core)
+if(MSVC)
+  target_compile_options(vividcam_engine PRIVATE /W4 /permissive-)
+else()
+  target_compile_options(vividcam_engine PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
 if(VIVIDCAM_BUILD_TESTS)
   enable_testing()
   add_executable(vividcam_core_tests tests/core_tests.cpp)
@@ -87,4 +97,20 @@ if(VIVIDCAM_BUILD_TESTS)
     target_compile_options(vividcam_core_tests PRIVATE -UNDEBUG)
   endif()
   add_test(NAME vividcam_core_tests COMMAND vividcam_core_tests)
+
+  add_executable(vividcam_engine_tests tests/engine_host_tests.cpp)
+  target_link_libraries(vividcam_engine_tests PRIVATE vividcam_core)
+  if(MSVC)
+    target_compile_options(vividcam_engine_tests PRIVATE /W4 /permissive- /UNDEBUG)
+  else()
+    target_compile_options(vividcam_engine_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+                                                           -UNDEBUG)
+  endif()
+  add_test(NAME vividcam_engine_tests COMMAND vividcam_engine_tests)
+  add_test(NAME vividcam_engine_bounded_smoke
+           COMMAND ${CMAKE_COMMAND}
+                   -DENGINE_EXECUTABLE=$<TARGET_FILE:vividcam_engine>
+                   -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_engine_smoke.cmake)
+  set_tests_properties(vividcam_engine_bounded_smoke PROPERTIES
+    TIMEOUT 7)
 endif()

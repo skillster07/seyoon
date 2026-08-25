@@ -31,6 +31,7 @@ Media Foundation Capture
 | Virtual Camera | Windows 카메라 출력 | IMFMediaSource/Stream과 MFCreateVirtualCamera 등록·시작·정지·제거 구현, 로컬 W4a 통과, Frame Server producer bridge 예정 |
 | MF Adapter | 타입·샘플·이벤트·descriptor | IMFMediaType, GPU IMFSample, event queue, stream/presentation descriptor와 기본 NV12 선택 구현 |
 | Pixel Conversion | 합성 BGRA를 소비자 포맷으로 변환 | CPU 기준 변환과 D3D11 Video Processor NV12 zero-copy·출력 풀 구현, Windows GPU 변환 통과 |
+| Engine Host | 사용자 세션 장기 실행·상태 보고 | 별도 `vividcam_engine`, 생명주기·heartbeat·정상 종료와 bounded smoke 구현 |
 | Bridge | 데스크톱 UI와 네이티브 명령·상태 연결 | 예정 |
 
 ## 프로세스 경계
@@ -45,6 +46,14 @@ W4b에서는 사용자 세션의 엔진과 Frame Server source 사이에 version
 latest-frame/backpressure, heartbeat·재연결, producer 부재 시 테스트 패턴을
 구현해야 합니다.
 
+W4b-1의 `schema=1` 출력은 엔진 자체의 운영 텔레메트리 형식이며 프로세스 간 wire
+protocol은 아닙니다. 다음 IPC 단계에서는 사용자 세션의 엔진을 비동기 named-pipe
+server, `IMFMediaSource::Start` 이후의 Frame Server source worker를 client로 둡니다.
+`RequestSample`, `ActivateObject`, `DllMain`은 IPC를 기다리지 않으며, 연결 부재·stale
+상태에서는 현재 테스트 패턴을 계속 반환합니다. control 메시지는 C++ 메모리 구조를
+그대로 전송하지 않고 버전이 명시된 little-endian codec으로 직렬화하며, 원격 연결을
+거부하고 로그인 세션과 LocalService만 허용하는 명시적 ACL을 사용합니다.
+
 ## 60p 타이밍 원칙
 
 - 기준 주기는 약 16.67ms입니다.
@@ -52,8 +61,9 @@ latest-frame/backpressure, heartbeat·재연결, producer 부재 시 테스트 �
 - 완료 시각이 다음 프레임 경계를 넘으면 누락 프레임으로 계측합니다.
 - 실시간 방송에서는 오래된 프레임을 누적 처리하지 않고 최신 프레임으로 따라잡습니다.
 - SOOP 기본 프로필은 1920×1080 60p, TikTok 기본 프로필은 1080×1920 60p입니다.
-- W4b-0 테스트 패턴은 sample timestamp·duration의 논리적 60p 계약을 검증합니다. 실제
-  wall-clock pacing과 누락 프레임 계측은 W4b-1 엔진 출력 스케줄러에서 별도 검증합니다.
+- W4b-0 테스트 패턴은 sample timestamp·duration의 논리적 60p 계약을 검증합니다.
+- W4b-1 엔진 heartbeat는 steady clock 기반 deadline과 누락 interval을 검증합니다.
+  실제 합성 프레임의 wall-clock 60p pacing은 producer IPC를 연결한 뒤 별도로 검증합니다.
 
 ## 스레드 모델 초안
 
@@ -97,7 +107,7 @@ latest-frame/backpressure, heartbeat·재연결, producer 부재 시 테스트 �
 20. MFCreateVirtualCamera 세션/시스템·사용자 접근 등록, Start/Stop/Remove 수명주기 — 구현, Windows W4a 통과
 21. IMFActivate COM class factory DLL, all-users 설치·제거·activation probe — 구현, Windows W4a 통과
 22. W4b-0 System+CurrentUser 영구 등록, NV12/BGRA 이동 컬러바, symbolic link 기반 실제 Media Foundation consumer smoke — 구현, 로컬 1920×1080 NV12 60p 수신 통과, 재부팅 지속성 대기
-23. 장시간 `vividcam_engine` 호스트와 producer 상태·heartbeat·텔레메트리
-24. 엔진 사용자 세션 ↔ Frame Server Local Service 사이 versioned IPC latest-frame 브리지
+23. 장시간 `vividcam_engine` 호스트와 생명주기·heartbeat·텔레메트리 — 구현, Windows 일반 사용자 bounded·Ctrl+C 종료 통과
+24. 엔진 사용자 세션 ↔ Frame Server Local Service 사이 versioned control IPC와 CPU latest-frame 브리지
 25. D3D11 공유 텍스처 IPC와 CPU fallback, device-lost·재연결 복구
 26. OBS → SOOP → TikTok LIVE Studio 장치 열거·1080p60 수신 W4b
