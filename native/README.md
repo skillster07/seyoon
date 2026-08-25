@@ -32,7 +32,7 @@
 - 플랫폼 진단 CLI
 - 플랫폼 독립 코어 단위 테스트
 
-현재 Windows 구현은 **1080p60 포맷 협상, 비동기 프레임 수신, D3D11·DXGI surface 전달, 단일 카메라 합성, W4a 등록과 W4b-0 테스트 패턴 단계**입니다. 2026-08-26 로컬에서 W1 최선 60 FPS 입력, W2 GPU surface, W3 1080p60 오프스크린 합성·NV12 변환과 W4a COM activation·등록 수명주기가 통과했습니다. W4b-0 영구 등록·컬러바·표준 MF consumer 코드는 구현되었고 새 DLL 재설치 후 로컬 gate가 남았습니다. 실제 엔진 프레임을 Frame Server 소스로 전달하는 producer bridge는 아직 구현 전입니다.
+현재 Windows 구현은 **1080p60 포맷 협상, 비동기 프레임 수신, D3D11·DXGI surface 전달, 단일 카메라 합성, W4a 등록과 W4b-0 테스트 패턴 단계**입니다. 2026-08-26 로컬에서 W1 최선 60 FPS 입력, W2 GPU surface, W3 1080p60 오프스크린 합성·NV12 변환과 W4a COM activation·등록 수명주기가 통과했습니다. W4b-0 영구 등록 장치도 실제 Frame Server consumer에서 1920×1080 NV12 60p 이동 컬러바 12개를 전달했습니다. 실제 엔진 프레임을 Frame Server 소스로 전달하는 producer bridge는 아직 구현 전입니다.
 
 ## Linux/macOS 공통 코어 검증
 
@@ -80,7 +80,7 @@ W4b producer bridge와 별도 호환성 검증이 계속 필요합니다.
 
 ## 다음 완료 조건
 
-1. 새 activation DLL을 관리자 재설치한 뒤 등록 소스의 1920×1080 60p 테스트 패턴 gate 통과
+1. Windows 재부팅 후 영구 등록 장치 유지와 W4b-0 재수신
 2. 장시간 실행 엔진 호스트와 Frame Server 사이 latest-frame IPC
 3. 네이티브 1920×1080 60 FPS 입력 소스로 W1~W3 재검증
 4. OBS·SOOP·TikTok LIVE Studio 장치 인식과 실제 영상 수신 W4b
