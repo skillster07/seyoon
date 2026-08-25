@@ -29,11 +29,13 @@
 - System+CurrentUser 영구 카메라 설치·제거와 등록 symbolic link 조회
 - 등록 소스 전용 1920×1080 NV12/BGRA 60p 이동 컬러바와 실제 Frame Server consumer smoke gate
 - 일반 사용자 세션에서 장시간 실행되는 `vividcam_engine`, 결정적 생명주기·heartbeat·종료 텔레메트리
+- 64-byte little-endian versioned control protocol, strict decoder와 안정 메시지 ID
+- 로그인 세션·LocalService 전용 Windows named-pipe control, cross-process heartbeat·재연결·취소 가능한 종료
 - RGBA 이미지·텍스트 스타일 리소스 저장소와 GPU 결과 비교용 색상/이미지 CPU 참조 합성기
 - 플랫폼 진단 CLI
 - 플랫폼 독립 코어 단위 테스트
 
-현재 Windows 구현은 **1080p60 포맷 협상, 비동기 프레임 수신, D3D11·DXGI surface 전달, 단일 카메라 합성, W4a 등록, W4b-0 테스트 패턴과 W4b-1 엔진 호스트 단계**입니다. 2026-08-26 로컬에서 W1 최선 60 FPS 입력, W2 GPU surface, W3 1080p60 오프스크린 합성·NV12 변환과 W4a COM activation·등록 수명주기가 통과했습니다. W4b-0 영구 등록 장치도 실제 Frame Server consumer에서 1920×1080 NV12 60p 이동 컬러바 12개를 전달했습니다. W4b-1 엔진은 일반 사용자 권한에서 생명주기, heartbeat, 제한 시간과 Ctrl+C 종료가 통과했습니다. 실제 엔진 프레임을 Frame Server 소스로 전달하는 producer bridge와 W4b-0 재부팅 지속성 검증은 아직 남아 있습니다.
+현재 Windows 구현은 **1080p60 포맷 협상, 비동기 프레임 수신, D3D11·DXGI surface 전달, 단일 카메라 합성, W4a 등록, W4b-0 테스트 패턴, W4b-1 엔진 호스트와 W4b-2a control IPC 단계**입니다. 2026-08-26 로컬에서 W1 최선 60 FPS 입력, W2 GPU surface, W3 1080p60 오프스크린 합성·NV12 변환과 W4a COM activation·등록 수명주기가 통과했습니다. W4b-0 영구 등록 장치도 실제 Frame Server consumer에서 1920×1080 NV12 60p 이동 컬러바 12개를 전달했습니다. W4b-1 엔진은 일반 사용자 권한에서 생명주기, heartbeat, 제한 시간과 Ctrl+C 종료가 통과했습니다. W4b-2a는 Windows current-user loopback의 version 협상·양방향 heartbeat·재연결·bounded shutdown과 설치 DLL의 실제 Frame Server LocalService handshake 1회·heartbeat ACK 69/69를 오류 없이 통과했습니다. 엔진 프레임을 전달하는 CPU producer bridge와 W4b-0 재부팅 지속성 검증은 아직 남아 있습니다.
 
 ## Linux/macOS 공통 코어 검증
 
@@ -63,7 +65,7 @@ ctest --test-dir native/build -C Release --output-on-failure
 ```
 
 검증 스크립트는 `vividcam_virtual_camera_source.dll`의 all-users 설치 상태와 해시를
-확인하고 실제 CLSID activation, W4a 수명주기, W4b-0 영구 등록 장치의 컬러바 수신까지 검사합니다. Frame Server가
+확인하고 control protocol·Windows loopback CTest, 실제 CLSID activation, W4a 수명주기, W4b-0 영구 등록 장치의 컬러바 수신까지 검사합니다. Frame Server가
 읽을 수 있도록 DLL은 `C:\Program Files\VIVIDCAM\VirtualCamera`에 설치합니다. 수동
 설치와 제거는 관리자 PowerShell에서 다음 명령으로 수행할 수 있습니다.
 
@@ -84,14 +86,28 @@ W4b producer bridge와 별도 호환성 검증이 계속 필요합니다.
 `vividcam_engine`은 Windows service나 관리자 프로세스가 아니라 로그인한 사용자의
 세션에서 실행합니다. 인자 없이 실행하면 Ctrl+C를 받을 때까지 계속 실행하고,
 `--run-for-ms`는 CI와 smoke 검증을 위한 제한 실행입니다. 각 상태 행의
-`frame_transport=unavailable`은 W4b-1 호스트만 실행 중이며 Frame Server IPC가 아직
+`[engine-control]` 행은 W4b-2a control worker의 연결·handshake·heartbeat 카운터입니다.
+`frame_transport=unavailable`은 control 연결과 별개로 실제 영상 프레임 transport가 아직
 연결되지 않았다는 뜻입니다.
+
+엔진을 실행한 상태에서 별도 일반 사용자 PowerShell로 production peer gate를 확인할
+수 있습니다.
+
+```powershell
+.\native\build\Release\vividcam_diagnostics.exe --control-client-test
+```
+
+`[control-client] ... [valid]`이면 별도 프로세스 handshake와 heartbeat가 통과한
+것입니다. 이 명령은 current-user 진단이며 설치 DLL의 실제 LocalService 결과는
+`docs/validation/WINDOWS_W4B2A_CONTROL_IPC_2026-08-26.md`에 기록합니다. 어느 쪽도
+아직 구현되지 않은 frame transport를 검증하지는 않습니다.
 
 ## 다음 완료 조건
 
 1. Windows 재부팅 후 영구 등록 장치 유지와 W4b-0 재수신
-2. 엔진과 Frame Server 사이 versioned control·heartbeat 및 CPU latest-frame IPC
-3. 네이티브 1920×1080 60 FPS 입력 소스로 W1~W3 재검증
-4. OBS·SOOP·TikTok LIVE Studio 장치 인식과 실제 영상 수신 W4b
-5. 앱·엔진·장치 재시작과 분리·재연결 자동 복구
-6. 4시간 1080p60 안정성·드롭·CPU·RAM·VRAM 검증
+2. frame transport 전 producer code-signature 또는 per-camera nonce 신원 binding과 negative test
+3. CPU latest-frame IPC와 실제 합성 프레임 전달
+4. 네이티브 1920×1080 60 FPS 입력 소스로 W1~W3 재검증
+5. OBS·SOOP·TikTok LIVE Studio 장치 인식과 실제 영상 수신 W4b
+6. 앱·엔진·장치 재시작과 분리·재연결 자동 복구
+7. 4시간 1080p60 안정성·드롭·CPU·RAM·VRAM 검증

@@ -28,10 +28,11 @@ Media Foundation Capture
 | Compositor | D3D11 텍스처 및 레이어 합성 | 장면 배경색·카메라 위치/크기/투명도·회전·BGRA 출력 구현, Windows W3 오프스크린 통과, 이미지/텍스트 그리기 예정 |
 | Output Hub | 프리뷰·가상 카메라·인코더 소비자 fan-out | 소비자별 latest-frame·덮어쓰기 계측 구현 |
 | Effects | 얼굴 추적·뷰티·세그멘테이션 | 예정 |
-| Virtual Camera | Windows 카메라 출력 | IMFMediaSource/Stream과 MFCreateVirtualCamera 등록·시작·정지·제거 구현, 로컬 W4a 통과, Frame Server producer bridge 예정 |
+| Virtual Camera | Windows 카메라 출력 | IMFMediaSource/Stream과 MFCreateVirtualCamera 등록·시작·정지·제거, 테스트 패턴 fallback과 비차단 control client 구현, frame bridge 예정 |
 | MF Adapter | 타입·샘플·이벤트·descriptor | IMFMediaType, GPU IMFSample, event queue, stream/presentation descriptor와 기본 NV12 선택 구현 |
 | Pixel Conversion | 합성 BGRA를 소비자 포맷으로 변환 | CPU 기준 변환과 D3D11 Video Processor NV12 zero-copy·출력 풀 구현, Windows GPU 변환 통과 |
 | Engine Host | 사용자 세션 장기 실행·상태 보고 | 별도 `vividcam_engine`, 생명주기·heartbeat·정상 종료와 bounded smoke 구현 |
+| Control IPC | Engine ↔ Frame Server 제어·상태 | VCIP 1.0 little-endian codec, 보호된 named pipe, heartbeat·stale·재연결 구현; Windows loopback과 설치 DLL LocalService gate 통과 |
 | Bridge | 데스크톱 UI와 네이티브 명령·상태 연결 | 예정 |
 
 ## 프로세스 경계
@@ -42,17 +43,39 @@ Media Source를 만들고 같은 프로세스에서 샘플을 직접 전달합�
 확인한 `source_samples`와 `delivered` 수치는 Media Source 계약과 파이프라인의
 프로세스 내부 검증이며, 방송 앱의 실제 영상 수신을 뜻하지 않습니다.
 
-W4b에서는 사용자 세션의 엔진과 Frame Server source 사이에 versioned IPC,
-latest-frame/backpressure, heartbeat·재연결, producer 부재 시 테스트 패턴을
-구현해야 합니다.
+W4b-2a에서는 사용자 세션의 엔진과 Frame Server source 사이 versioned control IPC,
+heartbeat·재연결과 producer 부재 시 테스트 패턴 fallback을 구현했습니다. 다음
+W4b-2b에서는 같은 수명주기 경계에 CPU latest-frame/backpressure 전송을 연결합니다.
 
 W4b-1의 `schema=1` 출력은 엔진 자체의 운영 텔레메트리 형식이며 프로세스 간 wire
-protocol은 아닙니다. 다음 IPC 단계에서는 사용자 세션의 엔진을 비동기 named-pipe
-server, `IMFMediaSource::Start` 이후의 Frame Server source worker를 client로 둡니다.
+protocol은 아닙니다. W4b-2a는 사용자 세션의 엔진을 비동기 named-pipe server,
+`IMFMediaSource::Start` 이후의 Frame Server source worker를 client로 둡니다.
 `RequestSample`, `ActivateObject`, `DllMain`은 IPC를 기다리지 않으며, 연결 부재·stale
 상태에서는 현재 테스트 패턴을 계속 반환합니다. control 메시지는 C++ 메모리 구조를
 그대로 전송하지 않고 버전이 명시된 little-endian codec으로 직렬화하며, 원격 연결을
-거부하고 로그인 세션과 LocalService만 허용하는 명시적 ACL을 사용합니다.
+거부하고 현재 logon SID, LocalService와 SYSTEM만 허용하는 보호 DACL을 사용합니다.
+서버는 첫 `SourceHello`를 읽은 뒤 client를 impersonate해 SID를 다시 검사하고 즉시
+`RevertToSelf`합니다. W4b-2a의 단일 등록 카메라는 source CLSID에 묶인 stable control
+route를 engine과 source가 공유합니다. activation symbolic link는 Frame Server 경로에서
+형태나 전달 여부가 달라질 수 있으므로 IPC 주소로 사용하지 않습니다. route 원문은 pipe
+이름에 넣지 않고 UTF-16LE SHA-256 digest만 사용합니다. 모든 connect/read/write는 stop
+event와 함께 overlapped로 기다리며
+`CancelIoEx` completion을 회수한 뒤 worker를 종료합니다.
+
+source client는 Hello 전 pipe server PID, 정확한 `vividcam_engine.exe` basename,
+일반 사용자 token과 pipe session 일치를 확인합니다. 이 확인은 우발적이거나 낮은
+수준의 pipe 선점을 줄이는 방어 계층이지 암호학적 상호 인증은 아닙니다. W4b-2a는
+이 peer 검사에 필요한 범위만 열기 위해 engine 시작 시 기존 kernel-object DACL을
+보존하면서 LocalService에 current process의 `PROCESS_QUERY_LIMITED_INFORMATION`과
+primary token의 `TOKEN_QUERY`를 각각 direct ACE로 허용합니다. 새 ACE에는 그 밖의
+process/token 권한을 넣지 않고 설정이나 재검증이 실패하면 control server 시작을 거부합니다.
+`TokenDefaultDacl`은 읽거나 변경하지 않습니다. W4b-2a는
+payload·handle을 전송하지 않습니다. W4b-2b frame transport 전에는 패키지
+code-signature 또는 ACL로 보호된 카메라별 nonce challenge를 신원 binding gate로
+추가하고, 잘못된 신원·다른 session·service principal 거부를 자동 검증해야 합니다.
+현재 stable route는 단일 VIVIDCAM·단일 활성 사용자 엔진 범위입니다. 복수 카메라 또는
+동시 로그인 세션을 지원할 때는 설치 시 생성해 ACL로 보호하는 registration ID를 route와
+인증 challenge 양쪽에 포함해야 합니다.
 
 ## 60p 타이밍 원칙
 
@@ -63,6 +86,8 @@ server, `IMFMediaSource::Start` 이후의 Frame Server source worker를 client�
 - SOOP 기본 프로필은 1920×1080 60p, TikTok 기본 프로필은 1080×1920 60p입니다.
 - W4b-0 테스트 패턴은 sample timestamp·duration의 논리적 60p 계약을 검증합니다.
 - W4b-1 엔진 heartbeat는 steady clock 기반 deadline과 누락 interval을 검증합니다.
+- W4b-2a cross-process heartbeat는 500ms마다 전송하고 1500ms stale, 3000ms reconnect와
+  100→200→400→800→1600→2000ms 제한 backoff를 적용합니다.
   실제 합성 프레임의 wall-clock 60p pacing은 producer IPC를 연결한 뒤 별도로 검증합니다.
 
 ## 스레드 모델 초안
@@ -108,6 +133,8 @@ server, `IMFMediaSource::Start` 이후의 Frame Server source worker를 client�
 21. IMFActivate COM class factory DLL, all-users 설치·제거·activation probe — 구현, Windows W4a 통과
 22. W4b-0 System+CurrentUser 영구 등록, NV12/BGRA 이동 컬러바, symbolic link 기반 실제 Media Foundation consumer smoke — 구현, 로컬 1920×1080 NV12 60p 수신 통과, 재부팅 지속성 대기
 23. 장시간 `vividcam_engine` 호스트와 생명주기·heartbeat·텔레메트리 — 구현, Windows 일반 사용자 bounded·Ctrl+C 종료 통과
-24. 엔진 사용자 세션 ↔ Frame Server Local Service 사이 versioned control IPC와 CPU latest-frame 브리지
-25. D3D11 공유 텍스처 IPC와 CPU fallback, device-lost·재연결 복구
-26. OBS → SOOP → TikTok LIVE Studio 장치 열거·1080p60 수신 W4b
+24. 엔진 사용자 세션 ↔ Frame Server Local Service 사이 versioned control IPC — 구현, Windows loopback·재연결·bounded shutdown과 설치 DLL LocalService handshake·heartbeat 통과
+25. producer code-signature 또는 per-camera nonce 신원 binding gate
+26. CPU latest-frame/backpressure 브리지와 실제 합성 프레임 전달
+27. D3D11 공유 텍스처 IPC와 CPU fallback, device-lost·재연결 복구
+28. OBS → SOOP → TikTok LIVE Studio 장치 열거·1080p60 수신 W4b

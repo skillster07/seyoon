@@ -1,5 +1,6 @@
 #include "vividcam/camera_devices.hpp"
 #include "vividcam/camera_capture.hpp"
+#include "vividcam/control_channel_transport.hpp"
 #include "vividcam/frame_scheduler.hpp"
 #include "vividcam/gpu_context.hpp"
 #include "vividcam/gpu_pixel_converter.hpp"
@@ -25,6 +26,7 @@
 #endif
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
@@ -44,6 +46,9 @@ int main(int argc, char** argv) {
   const bool registered_source_test = argc > 1 &&
                                       std::string_view(argv[1]) ==
                                           "--registered-source-test";
+  const bool control_client_test = argc > 1 &&
+                                   std::string_view(argv[1]) ==
+                                       "--control-client-test";
   const bool install_camera = argc > 1 &&
                               std::string_view(argv[1]) == "--install-camera";
   const bool remove_camera = argc > 1 &&
@@ -270,6 +275,53 @@ int main(int argc, char** argv) {
               << std::uppercase << result.source_reader_flags << std::dec
               << " [valid]\n";
     return 0;
+  }
+  if (control_client_test) {
+#ifdef _WIN32
+    std::wstring route;
+    std::string error;
+    if (!find_registered_vividcam_control_route(route, error)) {
+      std::cout << "[control-client] route unavailable: " << error << '\n';
+      return 5;
+    }
+
+    SourceControlClient client;
+    if (!client.start(std::move(route), error)) {
+      std::cout << "[control-client] start failed: " << error << '\n';
+      return 5;
+    }
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds{5};
+    ControlChannelTransportSnapshot status;
+    do {
+      status = client.snapshot();
+      if (status.connected && status.successful_handshakes >= 1 &&
+          status.heartbeat_acks >= 2) {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    } while (std::chrono::steady_clock::now() < deadline);
+    client.stop();
+
+    const bool passed = status.connected &&
+                        status.successful_handshakes >= 1 &&
+                        status.heartbeat_acks >= 2 &&
+                        status.protocol_errors == 0 &&
+                        status.rejected_peers == 0;
+    std::cout << "[control-client] handshakes="
+              << status.successful_handshakes
+              << " heartbeat_acks=" << status.heartbeat_acks
+              << " protocol_errors=" << status.protocol_errors
+              << " rejected_peers=" << status.rejected_peers
+              << (passed ? " [valid]\n" : " [invalid]\n");
+    if (!passed && !status.last_error.empty()) {
+      std::cout << "[control-client] last_error=" << status.last_error << '\n';
+    }
+    return passed ? 0 : 5;
+#else
+    std::cout << "[control-client] Windows named pipes are unavailable\n";
+    return 5;
+#endif
   }
   if (install_camera || remove_camera) {
     std::string registration_error;
