@@ -41,6 +41,40 @@ if ($AllUsers) {
     }
 }
 
+function Stop-VividCamFrameServerServices {
+    $StoppedServices = @()
+    try {
+        foreach ($ServiceName in @("FrameServerMonitor", "FrameServer")) {
+            $Service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+            if ($null -eq $Service -or $Service.Status -eq "Stopped") { continue }
+            Write-Host "[VIVIDCAM] Stopping $ServiceName to update the loaded camera source" `
+                -ForegroundColor Yellow
+            $StoppedServices += $ServiceName
+            Stop-Service -InputObject $Service -ErrorAction Stop
+            $Service.WaitForStatus(
+                [System.ServiceProcess.ServiceControllerStatus]::Stopped,
+                [TimeSpan]::FromSeconds(15))
+        }
+    } catch {
+        Restart-VividCamFrameServerServices $StoppedServices
+        throw
+    }
+    return $StoppedServices
+}
+
+function Restart-VividCamFrameServerServices {
+    param([string[]]$ServiceNames)
+    foreach ($ServiceName in @("FrameServer", "FrameServerMonitor")) {
+        if ($ServiceNames -notcontains $ServiceName) { continue }
+        $Service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        if ($null -eq $Service -or $Service.Status -eq "Running") { continue }
+        Start-Service -InputObject $Service -ErrorAction Stop
+        $Service.WaitForStatus(
+            [System.ServiceProcess.ServiceControllerStatus]::Running,
+            [TimeSpan]::FromSeconds(15))
+    }
+}
+
 $Scope = if ($AllUsers) { "all-users" } else { "current-user" }
 $Server = $BuildServer
 $Diagnostics = $BuildDiagnostics
@@ -52,13 +86,41 @@ if ($AllUsers) {
     $Diagnostics = Join-Path $InstallDirectory "vividcam_diagnostics.exe"
 
     New-Item -ItemType Directory -Path $InstallDirectory -Force | Out-Null
-    if (-not [string]::Equals($BuildServer, $Server,
-                              [StringComparison]::OrdinalIgnoreCase)) {
-        Copy-Item -LiteralPath $BuildServer -Destination $Server -Force
+    $BuildHash = (Get-FileHash -LiteralPath $BuildServer -Algorithm SHA256).Hash
+    $ServerNeedsUpdate = -not (Test-Path $Server)
+    if (-not $ServerNeedsUpdate) {
+        $InstalledHash = (Get-FileHash -LiteralPath $Server -Algorithm SHA256).Hash
+        $ServerNeedsUpdate = $BuildHash -ne $InstalledHash
     }
-    if (-not [string]::Equals($BuildDiagnostics, $Diagnostics,
-                              [StringComparison]::OrdinalIgnoreCase)) {
-        Copy-Item -LiteralPath $BuildDiagnostics -Destination $Diagnostics -Force
+    $BuildDiagnosticsHash =
+        (Get-FileHash -LiteralPath $BuildDiagnostics -Algorithm SHA256).Hash
+    $DiagnosticsNeedsUpdate = -not (Test-Path $Diagnostics)
+    if (-not $DiagnosticsNeedsUpdate) {
+        $InstalledDiagnosticsHash =
+            (Get-FileHash -LiteralPath $Diagnostics -Algorithm SHA256).Hash
+        $DiagnosticsNeedsUpdate = $BuildDiagnosticsHash -ne $InstalledDiagnosticsHash
+    }
+
+    $StoppedFrameServerServices = @()
+    if ($ServerNeedsUpdate -and (Test-Path $Server)) {
+        $StoppedFrameServerServices = @(Stop-VividCamFrameServerServices)
+    }
+    try {
+        if ($ServerNeedsUpdate -and
+            -not [string]::Equals($BuildServer, $Server,
+                                  [StringComparison]::OrdinalIgnoreCase)) {
+            Copy-Item -LiteralPath $BuildServer -Destination $Server -Force
+        }
+        if ($DiagnosticsNeedsUpdate -and
+            -not [string]::Equals($BuildDiagnostics, $Diagnostics,
+                                  [StringComparison]::OrdinalIgnoreCase)) {
+            Copy-Item -LiteralPath $BuildDiagnostics -Destination $Diagnostics -Force
+        }
+    } catch {
+        throw ("Activation server deployment failed. Close applications using a camera " +
+               "and retry. " + $_.Exception.Message)
+    } finally {
+        Restart-VividCamFrameServerServices $StoppedFrameServerServices
     }
     if (-not (Test-Path $Server)) {
         throw "Activation server deployment failed: $Server"
@@ -66,13 +128,10 @@ if ($AllUsers) {
     if (-not (Test-Path $Diagnostics)) {
         throw "Diagnostics deployment failed: $Diagnostics"
     }
-    $BuildHash = (Get-FileHash -LiteralPath $BuildServer -Algorithm SHA256).Hash
     $InstalledHash = (Get-FileHash -LiteralPath $Server -Algorithm SHA256).Hash
     if ($BuildHash -ne $InstalledHash) {
         throw "Activation server deployment verification failed: $Server"
     }
-    $BuildDiagnosticsHash =
-        (Get-FileHash -LiteralPath $BuildDiagnostics -Algorithm SHA256).Hash
     $InstalledDiagnosticsHash =
         (Get-FileHash -LiteralPath $Diagnostics -Algorithm SHA256).Hash
     if ($BuildDiagnosticsHash -ne $InstalledDiagnosticsHash) {

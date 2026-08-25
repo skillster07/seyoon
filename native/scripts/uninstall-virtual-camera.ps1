@@ -29,6 +29,40 @@ if ($AllUsers) {
     }
 }
 
+function Stop-VividCamFrameServerServices {
+    $StoppedServices = @()
+    try {
+        foreach ($ServiceName in @("FrameServerMonitor", "FrameServer")) {
+            $Service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+            if ($null -eq $Service -or $Service.Status -eq "Stopped") { continue }
+            Write-Host "[VIVIDCAM] Stopping $ServiceName to remove the loaded camera source" `
+                -ForegroundColor Yellow
+            $StoppedServices += $ServiceName
+            Stop-Service -InputObject $Service -ErrorAction Stop
+            $Service.WaitForStatus(
+                [System.ServiceProcess.ServiceControllerStatus]::Stopped,
+                [TimeSpan]::FromSeconds(15))
+        }
+    } catch {
+        Restart-VividCamFrameServerServices $StoppedServices
+        throw
+    }
+    return $StoppedServices
+}
+
+function Restart-VividCamFrameServerServices {
+    param([string[]]$ServiceNames)
+    foreach ($ServiceName in @("FrameServer", "FrameServerMonitor")) {
+        if ($ServiceNames -notcontains $ServiceName) { continue }
+        $Service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        if ($null -eq $Service -or $Service.Status -eq "Running") { continue }
+        Start-Service -InputObject $Service -ErrorAction Stop
+        $Service.WaitForStatus(
+            [System.ServiceProcess.ServiceControllerStatus]::Running,
+            [TimeSpan]::FromSeconds(15))
+    }
+}
+
 $BuildDiagnostics = Join-Path $BuildDirectory "Release\vividcam_diagnostics.exe"
 $CameraManager = if (Test-Path $InstalledDiagnostics) {
     $InstalledDiagnostics
@@ -60,14 +94,25 @@ if (Test-Path $Key) {
 
 if ($AllUsers -and ((Test-Path $InstalledServer) -or
                     (Test-Path $InstalledDiagnostics))) {
+    $StoppedFrameServerServices = @()
     if (Test-Path $InstalledServer) {
-        Remove-Item -LiteralPath $InstalledServer -Force
+        $StoppedFrameServerServices = @(Stop-VividCamFrameServerServices)
     }
-    if (Test-Path $InstalledDiagnostics) {
-        Remove-Item -LiteralPath $InstalledDiagnostics -Force
-    }
-    if ((Get-ChildItem -LiteralPath $InstallDirectory -Force).Count -eq 0) {
-        Remove-Item -LiteralPath $InstallDirectory -Force
+    try {
+        if (Test-Path $InstalledServer) {
+            Remove-Item -LiteralPath $InstalledServer -Force
+        }
+        if (Test-Path $InstalledDiagnostics) {
+            Remove-Item -LiteralPath $InstalledDiagnostics -Force
+        }
+        if ((Get-ChildItem -LiteralPath $InstallDirectory -Force).Count -eq 0) {
+            Remove-Item -LiteralPath $InstallDirectory -Force
+        }
+    } catch {
+        throw ("Activation server removal failed. Close applications using a camera " +
+               "and retry. " + $_.Exception.Message)
+    } finally {
+        Restart-VividCamFrameServerServices $StoppedFrameServerServices
     }
     Write-Host "[VIVIDCAM] Removed activation server file: $InstalledServer" -ForegroundColor Green
 }
