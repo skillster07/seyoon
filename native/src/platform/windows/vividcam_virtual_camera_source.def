@@ -1,0 +1,4 @@
+LIBRARY vividcam_virtual_camera_source
+EXPORTS
+    DllCanUnloadNow PRIVATE
+    DllGetClassObject PRIVATE

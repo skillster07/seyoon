@@ -1,0 +1,39 @@
+name: VIVIDCAM CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run build
+
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build native/build --config Release --parallel
+      - name: Test
+        run: ctest --test-dir native/build -C Release --output-on-failure
+      - name: Portable diagnostics
+        if: runner.os == 'Linux'
+        run: ./native/build/vividcam_diagnostics
+      - name: Windows diagnostics
+        if: runner.os == 'Windows'
+        run: .\native\build\Release\vividcam_diagnostics.exe
