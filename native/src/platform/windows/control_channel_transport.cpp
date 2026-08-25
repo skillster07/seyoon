@@ -10,6 +10,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <Windows.h>
+#include <Aclapi.h>
 #include <bcrypt.h>
 #include <mfapi.h>
 #include <mfidl.h>
@@ -527,6 +528,194 @@ bool sid_is_well_known(PSID sid, WELL_KNOWN_SID_TYPE type,
   return EqualSid(sid, storage.data()) != FALSE;
 }
 
+struct SidAceSummary {
+  ACCESS_MASK allowed{0};
+  ACCESS_MASK denied{0};
+};
+
+bool summarize_sid_aces(PACL dacl, PSID sid, SidAceSummary& summary,
+                        const char* operation, std::string& error) {
+  summary = {};
+  if (dacl == nullptr || !IsValidAcl(dacl)) {
+    error = windows_error(operation, ERROR_INVALID_SECURITY_DESCR);
+    return false;
+  }
+  for (DWORD index = 0; index < dacl->AceCount; ++index) {
+    void* raw_ace = nullptr;
+    if (!GetAce(dacl, index, &raw_ace)) {
+      error = windows_error(operation, GetLastError());
+      return false;
+    }
+    const auto* header = static_cast<const ACE_HEADER*>(raw_ace);
+    ACCESS_MASK mask = 0;
+    PSID ace_sid = nullptr;
+    if (header->AceType == ACCESS_ALLOWED_ACE_TYPE) {
+      const auto* ace = static_cast<const ACCESS_ALLOWED_ACE*>(raw_ace);
+      mask = ace->Mask;
+      ace_sid = const_cast<DWORD*>(&ace->SidStart);
+      if (IsValidSid(ace_sid) && EqualSid(ace_sid, sid)) {
+        summary.allowed |= mask;
+      }
+    } else if (header->AceType == ACCESS_DENIED_ACE_TYPE) {
+      const auto* ace = static_cast<const ACCESS_DENIED_ACE*>(raw_ace);
+      mask = ace->Mask;
+      ace_sid = const_cast<DWORD*>(&ace->SidStart);
+      if (IsValidSid(ace_sid) && EqualSid(ace_sid, sid)) {
+        summary.denied |= mask;
+      }
+    }
+  }
+  error.clear();
+  return true;
+}
+
+bool grant_kernel_object_access(HANDLE object, PSID local_service_sid,
+                                ACCESS_MASK requested_access,
+                                const char* object_name,
+                                std::string& error) {
+  PACL current_dacl = nullptr;
+  PSECURITY_DESCRIPTOR raw_descriptor = nullptr;
+  DWORD status = GetSecurityInfo(
+      object, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr,
+      &current_dacl, nullptr, &raw_descriptor);
+  if (status != ERROR_SUCCESS) {
+    error = windows_error(
+        (std::string("GetSecurityInfo(") + object_name + " DACL)").c_str(),
+        status);
+    return false;
+  }
+  LocalAllocation descriptor_owner(
+      reinterpret_cast<HLOCAL>(raw_descriptor));
+
+  const std::string inspect_operation =
+      std::string("inspect ") + object_name + " DACL";
+  SidAceSummary current;
+  if (!summarize_sid_aces(current_dacl, local_service_sid, current,
+                           inspect_operation.c_str(), error)) {
+    return false;
+  }
+  if ((current.denied & requested_access) != 0) {
+    error = windows_error(
+        (std::string("LocalService denied by ") + object_name + " DACL")
+            .c_str(),
+        ERROR_ACCESS_DENIED);
+    return false;
+  }
+  if ((current.allowed & ~requested_access) != 0) {
+    error = windows_error(
+        (std::string("LocalService has excessive ") + object_name +
+         " access")
+            .c_str(),
+        ERROR_ACCESS_DENIED);
+    return false;
+  }
+  if ((current.allowed & requested_access) == requested_access) {
+    error.clear();
+    return true;
+  }
+
+  EXPLICIT_ACCESSW entry{};
+  entry.grfAccessPermissions = requested_access;
+  entry.grfAccessMode = GRANT_ACCESS;
+  entry.grfInheritance = NO_INHERITANCE;
+  BuildTrusteeWithSidW(&entry.Trustee, local_service_sid);
+  entry.Trustee.TrusteeType = TRUSTEE_IS_USER;
+
+  PACL updated_dacl = nullptr;
+  status = SetEntriesInAclW(1, &entry, current_dacl, &updated_dacl);
+  if (status != ERROR_SUCCESS) {
+    error = windows_error(
+        (std::string("SetEntriesInAcl(") + object_name + " DACL)").c_str(),
+        status);
+    return false;
+  }
+  LocalAllocation updated_dacl_owner(
+      reinterpret_cast<HLOCAL>(updated_dacl));
+  status = SetSecurityInfo(object, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION,
+                           nullptr, nullptr, updated_dacl, nullptr);
+  if (status != ERROR_SUCCESS) {
+    error = windows_error(
+        (std::string("SetSecurityInfo(") + object_name + " DACL)").c_str(),
+        status);
+    return false;
+  }
+
+  PACL verified_dacl = nullptr;
+  PSECURITY_DESCRIPTOR raw_verified_descriptor = nullptr;
+  status = GetSecurityInfo(
+      object, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr,
+      &verified_dacl, nullptr, &raw_verified_descriptor);
+  if (status != ERROR_SUCCESS) {
+    error = windows_error(
+        (std::string("verify GetSecurityInfo(") + object_name + " DACL)")
+            .c_str(),
+        status);
+    return false;
+  }
+  LocalAllocation verified_descriptor_owner(
+      reinterpret_cast<HLOCAL>(raw_verified_descriptor));
+  SidAceSummary verified;
+  const std::string verify_operation =
+      std::string("verify ") + object_name + " DACL";
+  if (!summarize_sid_aces(verified_dacl, local_service_sid, verified,
+                           verify_operation.c_str(), error)) {
+    return false;
+  }
+  if ((verified.denied & requested_access) != 0 ||
+      (verified.allowed & requested_access) != requested_access ||
+      (verified.allowed & ~requested_access) != 0) {
+    error = windows_error(verify_operation.c_str(), ERROR_ACCESS_DENIED);
+    return false;
+  }
+  error.clear();
+  return true;
+}
+
+bool prepare_engine_peer_query_access(std::string& error) {
+  std::array<std::byte, SECURITY_MAX_SID_SIZE> local_service_storage{};
+  DWORD local_service_size =
+      static_cast<DWORD>(local_service_storage.size());
+  if (!CreateWellKnownSid(WinLocalServiceSid, nullptr,
+                          local_service_storage.data(),
+                          &local_service_size)) {
+    error = windows_error("CreateWellKnownSid(LocalService)", GetLastError());
+    return false;
+  }
+
+  // Use real handles with only the standard DACL rights needed below. Opening
+  // both first avoids changing either object when handle preparation fails.
+  UniqueHandle process(OpenProcess(READ_CONTROL | WRITE_DAC, FALSE,
+                                   GetCurrentProcessId()));
+  if (!process.valid()) {
+    error = windows_error("OpenProcess(READ_CONTROL|WRITE_DAC)",
+                          GetLastError());
+    return false;
+  }
+  HANDLE raw_token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), READ_CONTROL | WRITE_DAC,
+                        &raw_token)) {
+    error = windows_error("OpenProcessToken(READ_CONTROL|WRITE_DAC)",
+                          GetLastError());
+    return false;
+  }
+  UniqueHandle token(raw_token);
+
+  PSID local_service_sid = local_service_storage.data();
+  if (!grant_kernel_object_access(
+          process.get(), local_service_sid, PROCESS_QUERY_LIMITED_INFORMATION,
+          "process", error)) {
+    return false;
+  }
+  // This changes only the current primary token object's kernel DACL. It never
+  // reads or writes TokenDefaultDacl, which controls defaults for future objects.
+  if (!grant_kernel_object_access(token.get(), local_service_sid, TOKEN_QUERY,
+                                  "primary token", error)) {
+    return false;
+  }
+  error.clear();
+  return true;
+}
+
 class ImpersonationGuard {
  public:
   ImpersonationGuard() noexcept = default;
@@ -959,6 +1148,12 @@ class ProducerControlServer::Impl {
     std::scoped_lock state_lock(mutex_);
     if (worker_.joinable()) {
       error = "Producer control server is already running";
+      return false;
+    }
+    if (!prepare_engine_peer_query_access(error)) {
+      snapshot_.running = false;
+      snapshot_.connected = false;
+      snapshot_.last_error = error;
       return false;
     }
     if (!stop_event_.valid()) {

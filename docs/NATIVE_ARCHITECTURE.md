@@ -65,6 +65,11 @@ event와 함께 overlapped로 기다리며
 source client는 Hello 전 pipe server PID, 정확한 `vividcam_engine.exe` basename,
 일반 사용자 token과 pipe session 일치를 확인합니다. 이 확인은 우발적이거나 낮은
 수준의 pipe 선점을 줄이는 방어 계층이지 암호학적 상호 인증은 아닙니다. W4b-2a는
+이 peer 검사에 필요한 범위만 열기 위해 engine 시작 시 기존 kernel-object DACL을
+보존하면서 LocalService에 current process의 `PROCESS_QUERY_LIMITED_INFORMATION`과
+primary token의 `TOKEN_QUERY`를 각각 direct ACE로 허용합니다. 새 ACE에는 그 밖의
+process/token 권한을 넣지 않고 설정이나 재검증이 실패하면 control server 시작을 거부합니다.
+`TokenDefaultDacl`은 읽거나 변경하지 않습니다. W4b-2a는
 payload·handle을 전송하지 않습니다. W4b-2b frame transport 전에는 패키지
 code-signature 또는 ACL로 보호된 카메라별 nonce challenge를 신원 binding gate로
 추가하고, 잘못된 신원·다른 session·service principal 거부를 자동 검증해야 합니다.

@@ -18,6 +18,8 @@ cross-process heartbeat, stale·재연결, 보안 경계와 취소 가능한 종
   첫 Hello 이후 client impersonation·SID 확인·`RevertToSelf`
 - source peer gate: server PID, 정확한 `vividcam_engine.exe` basename, 일반 사용자
   token과 pipe session의 자기 일관성을 Hello 전 확인
+- engine peer-inspection grant: 기존 object DACL을 보존하면서 LocalService 직접 ACE에
+  process `PROCESS_QUERY_LIMITED_INFORMATION`, primary token `TOKEN_QUERY`만 추가하고 실패 폐쇄
 - 종료: stop event, `CancelIoEx`, overlapped completion 회수, worker join
 - fallback: control 부재·오류·재연결 중에도 기존 1080p60 테스트 패턴 유지
 
@@ -58,6 +60,7 @@ transport test는 다음을 실제 Windows named pipe 두 worker로 검사합니
 - server 종료 뒤 client 재시도
 - 같은 endpoint의 server 재시작 뒤 두 번째 handshake
 - 동시 start/stop 반복 중 worker·pipe handle 수명 안전성
+- LocalService process/token query ACE의 정확한 mask, 금지 권한 부재와 반복 start 멱등성
 - client/server stop 합계 2초 미만
 
 동일 transport 실행 파일을 5회 연속 실행해 모두 통과했습니다.
@@ -103,6 +106,18 @@ endpoint와 nonempty symbolic link 검증은 engine 시작 조건으로 유지�
 문자열 자체를 pipe 주소로 사용하지 않습니다. 보정된 별도 일반 사용자 프로세스 검증은
 다시 `handshakes=1 heartbeat_acks=2 ... [valid]`로 통과했습니다. 최신 DLL을 재설치한 뒤
 아래 LocalService gate를 다시 실행해야 합니다.
+
+Frame Server의 source peer gate는 LocalService가 engine process와 primary token을
+query해야 하므로, 재검증 전에 engine이 두 kernel object의 기존 DACL을 보존하며 각각
+`PROCESS_QUERY_LIMITED_INFORMATION`과 `TOKEN_QUERY`만 LocalService에 부여하도록
+보강했습니다. 새 direct ACE에는 process 종료·메모리 접근, token duplicate·impersonate
+권한을 넣지 않으며 `TokenDefaultDacl`도 변경하지 않습니다. 적용 또는 재검증 실패 시
+control server는 시작하지 않습니다.
+
+이 검사는 기본 사용자 token DACL 계약의 LocalService direct ACE를 대상으로 합니다.
+그룹·callback/object ACE를 별도로 구성한 hardened/custom DACL 환경은 후속 호환성
+매트릭스에서 검증합니다. token DACL 단계가 실패하면 server는 시작되지 않지만 앞서
+추가된 process query ACE는 조회 전용 상태로 engine process 종료 때까지 남을 수 있습니다.
 
 또한 canonical route로 실행한 engine과 build의 synthetic `IMFMediaSource`를 별도
 프로세스로 연결해 `successful_handshakes=1`, protocol/rejected 오류 0을 확인했습니다.

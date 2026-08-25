@@ -16,6 +16,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <Windows.h>
+#include <Aclapi.h>
 #endif
 
 namespace {
@@ -33,6 +34,68 @@ bool wait_until(Predicate predicate, std::chrono::milliseconds timeout) {
 }
 
 #ifdef _WIN32
+struct KernelObjectAccessSummary {
+  ACCESS_MASK allowed{0};
+  ACCESS_MASK denied{0};
+  std::uint32_t allowed_ace_count{0};
+};
+
+KernelObjectAccessSummary inspect_local_service_access(HANDLE object) {
+  std::array<std::byte, SECURITY_MAX_SID_SIZE> sid_storage{};
+  DWORD sid_size = static_cast<DWORD>(sid_storage.size());
+  assert(CreateWellKnownSid(WinLocalServiceSid, nullptr, sid_storage.data(),
+                            &sid_size));
+
+  PACL dacl = nullptr;
+  PSECURITY_DESCRIPTOR descriptor = nullptr;
+  assert(GetSecurityInfo(object, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION,
+                         nullptr, nullptr, &dacl, nullptr,
+                         &descriptor) == ERROR_SUCCESS);
+  assert(descriptor != nullptr);
+  assert(dacl != nullptr);
+  assert(IsValidAcl(dacl));
+
+  KernelObjectAccessSummary summary;
+  for (DWORD index = 0; index < dacl->AceCount; ++index) {
+    void* raw_ace = nullptr;
+    assert(GetAce(dacl, index, &raw_ace));
+    const auto* header = static_cast<const ACE_HEADER*>(raw_ace);
+    if (header->AceType == ACCESS_ALLOWED_ACE_TYPE) {
+      const auto* ace = static_cast<const ACCESS_ALLOWED_ACE*>(raw_ace);
+      PSID sid = const_cast<DWORD*>(&ace->SidStart);
+      if (IsValidSid(sid) && EqualSid(sid, sid_storage.data())) {
+        summary.allowed |= ace->Mask;
+        ++summary.allowed_ace_count;
+      }
+    } else if (header->AceType == ACCESS_DENIED_ACE_TYPE) {
+      const auto* ace = static_cast<const ACCESS_DENIED_ACE*>(raw_ace);
+      PSID sid = const_cast<DWORD*>(&ace->SidStart);
+      if (IsValidSid(sid) && EqualSid(sid, sid_storage.data())) {
+        summary.denied |= ace->Mask;
+      }
+    }
+  }
+  LocalFree(descriptor);
+  return summary;
+}
+
+struct EngineQueryGrantSnapshot {
+  KernelObjectAccessSummary process;
+  KernelObjectAccessSummary token;
+};
+
+EngineQueryGrantSnapshot inspect_engine_query_grants() {
+  const HANDLE process = OpenProcess(READ_CONTROL, FALSE, GetCurrentProcessId());
+  assert(process != nullptr);
+  HANDLE token = nullptr;
+  assert(OpenProcessToken(GetCurrentProcess(), READ_CONTROL, &token));
+  const EngineQueryGrantSnapshot result{inspect_local_service_access(process),
+                                        inspect_local_service_access(token)};
+  CloseHandle(token);
+  CloseHandle(process);
+  return result;
+}
+
 bool send_wrong_magic_header(std::wstring_view pipe_name,
                              std::chrono::milliseconds timeout) {
   const std::wstring owned_pipe_name(pipe_name);
@@ -120,10 +183,25 @@ int main() {
   assert(!vividcam::make_vividcam_control_pipe_name({}, invalid_name, error));
   assert(!error.empty());
 
+  EngineQueryGrantSnapshot first_query_grants;
+
   {
     ProducerControlServer server;
     SourceControlClient client;
     assert(server.start(route, "loopback-engine", error));
+    first_query_grants = inspect_engine_query_grants();
+    assert(first_query_grants.process.allowed ==
+           PROCESS_QUERY_LIMITED_INFORMATION);
+    assert(first_query_grants.process.denied == 0);
+    assert(first_query_grants.process.allowed_ace_count == 1);
+    assert((first_query_grants.process.allowed &
+            (PROCESS_TERMINATE | PROCESS_VM_OPERATION | PROCESS_VM_READ |
+             PROCESS_VM_WRITE)) == 0);
+    assert(first_query_grants.token.allowed == TOKEN_QUERY);
+    assert(first_query_grants.token.denied == 0);
+    assert(first_query_grants.token.allowed_ace_count == 1);
+    assert((first_query_grants.token.allowed &
+            (TOKEN_DUPLICATE | TOKEN_IMPERSONATE)) == 0);
     assert(send_wrong_magic_header(pipe_name, 1s));
     assert(wait_until(
         [&] { return server.snapshot().protocol_errors >= 1; }, 1s));
@@ -266,6 +344,20 @@ int main() {
     assert(!client.snapshot().running);
     assert(!server.snapshot().running);
   }
+
+  const auto repeated_query_grants = inspect_engine_query_grants();
+  assert(repeated_query_grants.process.allowed ==
+         first_query_grants.process.allowed);
+  assert(repeated_query_grants.process.denied ==
+         first_query_grants.process.denied);
+  assert(repeated_query_grants.process.allowed_ace_count ==
+         first_query_grants.process.allowed_ace_count);
+  assert(repeated_query_grants.token.allowed ==
+         first_query_grants.token.allowed);
+  assert(repeated_query_grants.token.denied ==
+         first_query_grants.token.denied);
+  assert(repeated_query_grants.token.allowed_ace_count ==
+         first_query_grants.token.allowed_ace_count);
 
   return 0;
 #endif
