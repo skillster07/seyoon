@@ -35,7 +35,7 @@
 - 플랫폼 진단 CLI
 - 플랫폼 독립 코어 단위 테스트
 
-현재 Windows 구현은 **1080p60 포맷 협상, 비동기 프레임 수신, D3D11·DXGI surface 전달, 단일 카메라 합성, W4a 등록, W4b-0 테스트 패턴, W4b-1 엔진 호스트와 W4b-2a control IPC 단계**입니다. 2026-08-26 로컬에서 W1 최선 60 FPS 입력, W2 GPU surface, W3 1080p60 오프스크린 합성·NV12 변환과 W4a COM activation·등록 수명주기가 통과했습니다. W4b-0 영구 등록 장치도 실제 Frame Server consumer에서 1920×1080 NV12 60p 이동 컬러바 12개를 전달했습니다. W4b-1 엔진은 일반 사용자 권한에서 생명주기, heartbeat, 제한 시간과 Ctrl+C 종료가 통과했습니다. W4b-2a는 Windows current-user loopback에서 version 협상, 양방향 heartbeat, 서버 선·후기동과 재시작 재연결, bounded shutdown이 통과했습니다. 설치 DLL의 실제 Frame Server LocalService 연결, 엔진 프레임을 전달하는 CPU producer bridge와 W4b-0 재부팅 지속성 검증은 아직 남아 있습니다.
+현재 Windows 구현은 **1080p60 포맷 협상, 비동기 프레임 수신, D3D11·DXGI surface 전달, 단일 카메라 합성, W4a 등록, W4b-0 테스트 패턴, W4b-1 엔진 호스트와 W4b-2a control IPC 단계**입니다. 2026-08-26 로컬에서 W1 최선 60 FPS 입력, W2 GPU surface, W3 1080p60 오프스크린 합성·NV12 변환과 W4a COM activation·등록 수명주기가 통과했습니다. W4b-0 영구 등록 장치도 실제 Frame Server consumer에서 1920×1080 NV12 60p 이동 컬러바 12개를 전달했습니다. W4b-1 엔진은 일반 사용자 권한에서 생명주기, heartbeat, 제한 시간과 Ctrl+C 종료가 통과했습니다. W4b-2a는 Windows current-user loopback의 version 협상·양방향 heartbeat·재연결·bounded shutdown과 설치 DLL의 실제 Frame Server LocalService handshake 1회·heartbeat ACK 69/69를 오류 없이 통과했습니다. 엔진 프레임을 전달하는 CPU producer bridge와 W4b-0 재부팅 지속성 검증은 아직 남아 있습니다.
 
 ## Linux/macOS 공통 코어 검증
 
@@ -98,16 +98,16 @@ W4b producer bridge와 별도 호환성 검증이 계속 필요합니다.
 ```
 
 `[control-client] ... [valid]`이면 별도 프로세스 handshake와 heartbeat가 통과한
-것입니다. 이 단계는 설치 DLL의 Frame Server LocalService 검증과 frame transport를
-대체하지 않습니다.
+것입니다. 이 명령은 current-user 진단이며 설치 DLL의 실제 LocalService 결과는
+`docs/validation/WINDOWS_W4B2A_CONTROL_IPC_2026-08-26.md`에 기록합니다. 어느 쪽도
+아직 구현되지 않은 frame transport를 검증하지는 않습니다.
 
 ## 다음 완료 조건
 
 1. Windows 재부팅 후 영구 등록 장치 유지와 W4b-0 재수신
-2. 설치 DLL의 Frame Server LocalService ↔ 엔진 versioned control·heartbeat 실기 검증
-3. frame transport 전 producer code-signature 또는 per-camera nonce 신원 binding과 negative test
-4. CPU latest-frame IPC와 실제 합성 프레임 전달
-5. 네이티브 1920×1080 60 FPS 입력 소스로 W1~W3 재검증
-6. OBS·SOOP·TikTok LIVE Studio 장치 인식과 실제 영상 수신 W4b
-7. 앱·엔진·장치 재시작과 분리·재연결 자동 복구
-8. 4시간 1080p60 안정성·드롭·CPU·RAM·VRAM 검증
+2. frame transport 전 producer code-signature 또는 per-camera nonce 신원 binding과 negative test
+3. CPU latest-frame IPC와 실제 합성 프레임 전달
+4. 네이티브 1920×1080 60 FPS 입력 소스로 W1~W3 재검증
+5. OBS·SOOP·TikTok LIVE Studio 장치 인식과 실제 영상 수신 W4b
+6. 앱·엔진·장치 재시작과 분리·재연결 자동 복구
+7. 4시간 1080p60 안정성·드롭·CPU·RAM·VRAM 검증

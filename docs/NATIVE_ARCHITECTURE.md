@@ -32,7 +32,7 @@ Media Foundation Capture
 | MF Adapter | 타입·샘플·이벤트·descriptor | IMFMediaType, GPU IMFSample, event queue, stream/presentation descriptor와 기본 NV12 선택 구현 |
 | Pixel Conversion | 합성 BGRA를 소비자 포맷으로 변환 | CPU 기준 변환과 D3D11 Video Processor NV12 zero-copy·출력 풀 구현, Windows GPU 변환 통과 |
 | Engine Host | 사용자 세션 장기 실행·상태 보고 | 별도 `vividcam_engine`, 생명주기·heartbeat·정상 종료와 bounded smoke 구현 |
-| Control IPC | Engine ↔ Frame Server 제어·상태 | VCIP 1.0 little-endian codec, 보호된 named pipe, heartbeat·stale·재연결 구현; Windows loopback 통과, 실제 LocalService gate 대기 |
+| Control IPC | Engine ↔ Frame Server 제어·상태 | VCIP 1.0 little-endian codec, 보호된 named pipe, heartbeat·stale·재연결 구현; Windows loopback과 설치 DLL LocalService gate 통과 |
 | Bridge | 데스크톱 UI와 네이티브 명령·상태 연결 | 예정 |
 
 ## 프로세스 경계
@@ -133,7 +133,7 @@ code-signature 또는 ACL로 보호된 카메라별 nonce challenge를 신원 bi
 21. IMFActivate COM class factory DLL, all-users 설치·제거·activation probe — 구현, Windows W4a 통과
 22. W4b-0 System+CurrentUser 영구 등록, NV12/BGRA 이동 컬러바, symbolic link 기반 실제 Media Foundation consumer smoke — 구현, 로컬 1920×1080 NV12 60p 수신 통과, 재부팅 지속성 대기
 23. 장시간 `vividcam_engine` 호스트와 생명주기·heartbeat·텔레메트리 — 구현, Windows 일반 사용자 bounded·Ctrl+C 종료 통과
-24. 엔진 사용자 세션 ↔ Frame Server Local Service 사이 versioned control IPC — 구현, Windows loopback·재연결·bounded shutdown 통과, 설치 DLL LocalService gate 대기
+24. 엔진 사용자 세션 ↔ Frame Server Local Service 사이 versioned control IPC — 구현, Windows loopback·재연결·bounded shutdown과 설치 DLL LocalService handshake·heartbeat 통과
 25. producer code-signature 또는 per-camera nonce 신원 binding gate
 26. CPU latest-frame/backpressure 브리지와 실제 합성 프레임 전달
 27. D3D11 공유 텍스처 IPC와 CPU fallback, device-lost·재연결 복구

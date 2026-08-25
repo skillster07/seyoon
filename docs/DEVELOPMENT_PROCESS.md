@@ -159,13 +159,13 @@ Error code and full log:
 
 ## 현재 마일스톤
 
-- 2026-08-26 로컬 완료: W1 최선 60 FPS 캡처, W2 GPU surface, W3 1080p60 오프스크린 합성·NV12 변환, W4a COM activation·등록 수명주기, W4b-0 등록 소스 1080p60 테스트 패턴 수신 항목, W4b-1 일반 사용자 엔진 host bounded·Ctrl+C 종료, W4b-2a Windows control loopback·재연결
+- 2026-08-26 로컬 완료: W1 최선 60 FPS 캡처, W2 GPU surface, W3 1080p60 오프스크린 합성·NV12 변환, W4a COM activation·등록 수명주기, W4b-0 등록 소스 1080p60 테스트 패턴 수신 항목, W4b-1 일반 사용자 엔진 host bounded·Ctrl+C 종료, W4b-2a Windows control loopback·재연결 및 설치 DLL LocalService handshake·heartbeat
 - 검증 근거: `docs/validation/WINDOWS_W1_W4A_2026-08-26.md`, `docs/validation/WINDOWS_W4B0_2026-08-26.md`, `docs/validation/WINDOWS_W4B1_ENGINE_HOST_2026-08-26.md`, `docs/validation/WINDOWS_W4B2A_CONTROL_IPC_2026-08-26.md`
 - 입력 한계: 현재 캡처보드 입력은 720×480 60 FPS이며 네이티브 1080p60 입력은 별도 검증 필요
-- 현재 핵심 공백: W4b-2a control IPC 구현은 완료됐으나 설치 DLL의 실제 Frame Server LocalService gate와 CPU frame bridge가 남음
+- 현재 핵심 공백: frame payload 전 producer 신원 binding과 W4b-2b CPU frame bridge
 - 로컬 후속: Windows 재부팅 뒤 W4b-0 영구 등록·재수신 확인
 - 클라우드 완료: W4b-2a versioned control codec, 보호된 Windows named pipe, LocalService
   peer inspection 최소 권한, cross-process heartbeat·재연결·bounded shutdown
 - 클라우드 다음 범위: producer 신원 binding → W4b-2b CPU latest-frame IPC → D3D11 공유 텍스처 IPC
-- 로컬 다음 상태: OBS에서 실제 등록 장치의 테스트 패턴 수신 후 SOOP·TikTok LIVE Studio까지 1080p60 W4b 확장
+- 로컬 다음 상태: OBS 등록 장치 컬러바·control 수신 통과 후 SOOP·TikTok LIVE Studio까지 1080p60 W4b 확장
 - 병행 범위: D3D11 이미지·텍스트 렌더러, 데스크톱 UI bridge, 실제 1080p60 입력 및 장치 매트릭스
