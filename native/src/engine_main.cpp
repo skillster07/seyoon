@@ -15,7 +15,6 @@
 #include <chrono>
 #include <cstdint>
 #include <iostream>
-#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -163,10 +162,8 @@ int main(int argc, char** argv) {
   }
   print_status("lifecycle", host.snapshot(running_at));
 
-  const std::optional<vividcam::EngineHost::TimePoint> run_deadline =
-      options.run_for
-          ? std::optional<vividcam::EngineHost::TimePoint>{running_at + *options.run_for}
-          : std::nullopt;
+  auto run_deadline = vividcam::EngineHost::TimePoint::max();
+  if (options.run_for) run_deadline = running_at + *options.run_for;
   constexpr auto kSignalPollInterval = std::chrono::milliseconds{25};
   bool runtime_failed = false;
 
@@ -175,7 +172,7 @@ int main(int argc, char** argv) {
     vividcam::EngineStopReason stop_reason = vividcam::EngineStopReason::None;
     if (should_stop_for_signal()) {
       stop_reason = vividcam::EngineStopReason::ConsoleSignal;
-    } else if (run_deadline && now >= *run_deadline) {
+    } else if (now >= run_deadline) {
       stop_reason = vividcam::EngineStopReason::RunForElapsed;
     }
 
@@ -199,7 +196,7 @@ int main(int argc, char** argv) {
     if (const auto heartbeat_at = host.next_heartbeat_deadline()) {
       wake_at = std::min(wake_at, *heartbeat_at);
     }
-    if (run_deadline) wake_at = std::min(wake_at, *run_deadline);
+    wake_at = std::min(wake_at, run_deadline);
     if (wake_at > now) std::this_thread::sleep_until(wake_at);
   }
 
