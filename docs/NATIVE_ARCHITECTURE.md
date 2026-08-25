@@ -55,8 +55,11 @@ protocol은 아닙니다. W4b-2a는 사용자 세션의 엔진을 비동기 name
 그대로 전송하지 않고 버전이 명시된 little-endian codec으로 직렬화하며, 원격 연결을
 거부하고 현재 logon SID, LocalService와 SYSTEM만 허용하는 보호 DACL을 사용합니다.
 서버는 첫 `SourceHello`를 읽은 뒤 client를 impersonate해 SID를 다시 검사하고 즉시
-`RevertToSelf`합니다. route 원문은 pipe 이름에 넣지 않고 UTF-16LE SHA-256 digest만
-사용합니다. 모든 connect/read/write는 stop event와 함께 overlapped로 기다리며
+`RevertToSelf`합니다. W4b-2a의 단일 등록 카메라는 source CLSID에 묶인 stable control
+route를 engine과 source가 공유합니다. activation symbolic link는 Frame Server 경로에서
+형태나 전달 여부가 달라질 수 있으므로 IPC 주소로 사용하지 않습니다. route 원문은 pipe
+이름에 넣지 않고 UTF-16LE SHA-256 digest만 사용합니다. 모든 connect/read/write는 stop
+event와 함께 overlapped로 기다리며
 `CancelIoEx` completion을 회수한 뒤 worker를 종료합니다.
 
 source client는 Hello 전 pipe server PID, 정확한 `vividcam_engine.exe` basename,
@@ -65,6 +68,9 @@ source client는 Hello 전 pipe server PID, 정확한 `vividcam_engine.exe` base
 payload·handle을 전송하지 않습니다. W4b-2b frame transport 전에는 패키지
 code-signature 또는 ACL로 보호된 카메라별 nonce challenge를 신원 binding gate로
 추가하고, 잘못된 신원·다른 session·service principal 거부를 자동 검증해야 합니다.
+현재 stable route는 단일 VIVIDCAM·단일 활성 사용자 엔진 범위입니다. 복수 카메라 또는
+동시 로그인 세션을 지원할 때는 설치 시 생성해 ACL로 보호하는 registration ID를 route와
+인증 challenge 양쪽에 포함해야 합니다.
 
 ## 60p 타이밍 원칙
 

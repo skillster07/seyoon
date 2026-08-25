@@ -98,25 +98,6 @@ HRESULT current_synthetic_media_format(IMFStreamDescriptor* descriptor,
   return S_OK;
 }
 
-std::wstring copy_string_attribute(IMFAttributes* attributes,
-                                   REFGUID key) noexcept {
-  if (!attributes) return {};
-
-  PWSTR value = nullptr;
-  UINT32 length = 0;
-  const HRESULT status = attributes->GetAllocatedString(key, &value, &length);
-  std::wstring result;
-  if (SUCCEEDED(status) && value) {
-    try {
-      result.assign(value, length);
-    } catch (...) {
-      result.clear();
-    }
-  }
-  CoTaskMemFree(value);
-  return result;
-}
-
 bool buffer_range_contains(const BYTE* buffer_start, DWORD buffer_length,
                            const BYTE* row, std::size_t row_bytes) {
   const auto start = reinterpret_cast<std::uintptr_t>(buffer_start);
@@ -600,7 +581,7 @@ class VirtualCameraMediaSource final : public IMFMediaSourceEx,
     if (!descriptor || !position) return E_INVALIDARG;
     if (time_format && *time_format != GUID_NULL) return MF_E_UNSUPPORTED_TIME_FORMAT;
     std::scoped_lock lifecycle_lock(control_lifecycle_mutex_);
-    std::wstring control_route;
+    bool start_control = false;
     HRESULT status = S_OK;
     {
       std::scoped_lock lock(mutex_);
@@ -654,19 +635,17 @@ class VirtualCameraMediaSource final : public IMFMediaSourceEx,
       }
       if (SUCCEEDED(status)) {
         started_ = true;
-        if (mode_ == MediaFoundationVirtualCameraSourceMode::SyntheticPattern) {
-          control_route = copy_string_attribute(
-              source_attributes_.Get(),
-              MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK);
-        }
+        start_control =
+            mode_ == MediaFoundationVirtualCameraSourceMode::SyntheticPattern;
       }
       PropVariantClear(&start_time);
     }
 
-    if (!control_route.empty()) {
+    if (start_control) {
       try {
         std::string ignored_error;
-        (void)control_client_.start(std::move(control_route), ignored_error);
+        (void)control_client_.start(
+            std::wstring(kVividCamPrimaryControlRoute), ignored_error);
       } catch (...) {
         control_client_.stop();
       }

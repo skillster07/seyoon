@@ -11,7 +11,7 @@ cross-process heartbeat, stale·재연결, 보안 경계와 취소 가능한 종
 
 - wire: `VCIP` 1.0, 64-byte little-endian header, 최대 payload 64 KiB
 - control: payload 없는 `SourceHello`, `ProducerHello`, `Heartbeat`, `HeartbeatAck`
-- endpoint: activation symbolic link의 UTF-16LE SHA-256 digest
+- endpoint: 단일 VIVIDCAM source CLSID에 묶인 stable route의 UTF-16LE SHA-256 digest
 - server: 로그인 사용자 세션의 `vividcam_engine`
 - client: `IMFMediaSource::Start`가 성공한 뒤 시작되는 source worker
 - 보안: protected DACL의 logon SID·LocalService·SYSTEM, remote client 거부,
@@ -50,7 +50,7 @@ vividcam_engine_bounded_smoke .............. Passed
 
 transport test는 다음을 실제 Windows named pipe 두 worker로 검사합니다.
 
-- route 원문 비노출과 SHA-256 golden 값
+- stable single-camera route 원문 비노출과 SHA-256 golden 값
 - current-logon loopback Hello와 peer PID 확인
 - 잘못된 magic client 거부 뒤 정상 client 복구
 - heartbeat/ack 2회 이상
@@ -80,6 +80,34 @@ transport test는 다음을 실제 Windows named pipe 두 worker로 검사합니
 
 이 검증은 실제 engine image·token·session 확인을 통과한 것이며 아래의 Frame Server
 LocalService source 검증을 대체하지 않습니다.
+
+## 첫 LocalService gate 관찰과 route 보정
+
+최신 설치 DLL과 build DLL의 SHA-256 일치, HKLM COM 경로와 LocalService FrameServer
+재기동을 확인한 상태에서 등록 카메라의 컬러바는 정상 수신됐습니다. 그러나 최초 실제
+gate의 engine 종료 telemetry는 다음과 같았습니다.
+
+```text
+connection_attempts=1 successful_handshakes=0 heartbeats_sent=0
+heartbeat_acks=0 protocol_errors=0 rejected_peers=0
+```
+
+server의 `connection_attempts=1`은 한 pipe instance가 `ConnectNamedPipe`에서 기다렸다는
+뜻입니다. 정확히 같은 endpoint에 `CreateFile`이 성공했다면 client가 Hello 전에 닫혀도
+server가 다음 instance를 만들기 때문에 25초 실행에서 값이 2 이상이어야 합니다. 따라서
+설치 실패나 컬러바 source 실패가 아니라 activation symbolic link 기반 rendezvous가 실제
+Frame Server 경로에서 성립하지 않은 것으로 판단했습니다.
+
+보정 후 engine과 source는 단일 source CLSID 기반 stable route를 직접 공유합니다. 등록
+endpoint와 nonempty symbolic link 검증은 engine 시작 조건으로 유지하지만 symbolic link
+문자열 자체를 pipe 주소로 사용하지 않습니다. 보정된 별도 일반 사용자 프로세스 검증은
+다시 `handshakes=1 heartbeat_acks=2 ... [valid]`로 통과했습니다. 최신 DLL을 재설치한 뒤
+아래 LocalService gate를 다시 실행해야 합니다.
+
+또한 canonical route로 실행한 engine과 build의 synthetic `IMFMediaSource`를 별도
+프로세스로 연결해 `successful_handshakes=1`, protocol/rejected 오류 0을 확인했습니다.
+이 source smoke는 3개 샘플 직후 종료되므로 heartbeat ACK gate는 아래의 2초 이상 실제
+Frame Server 실행에서 확인합니다.
 
 ## Portable 검증
 

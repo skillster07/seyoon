@@ -93,7 +93,7 @@ Native CTest 타깃은 Release 빌드에서도 `NDEBUG`를 해제하여 assertio
 
 - `VCIP` 1.0 고정 64-byte little-endian header와 안정 메시지 ID golden test 통과
 - 잘못된 magic·major·type·길이·reserved·sequence·trailing bytes를 명확히 거부
-- pipe 이름에 symbolic link 원문을 노출하지 않고 SHA-256 route token만 사용
+- 단일 source CLSID stable route를 engine/source가 공유하고 SHA-256 pipe token만 노출
 - 원격 client를 거부하고 logon SID·LocalService·SYSTEM만 허용하는 보호 DACL 적용
 - server가 `SourceHello` 뒤 peer SID를 확인하고 모든 impersonation 경로에서 복귀
 - source가 Hello 전 server PID·정확한 engine image·일반 사용자 token·session을 확인
@@ -102,6 +102,7 @@ Native CTest 타깃은 Release 빌드에서도 `NDEBUG`를 해제하여 assertio
 - producer 부재·protocol 오류·재연결 중에도 `RequestSample` 테스트 패턴 경로가 비차단 유지
 - frame payload·공유 handle 전송 전 code-signature 또는 per-camera nonce 신원 binding과
   wrong identity·다른 session·service token negative test 추가
+- 복수 카메라·동시 로그인 지원 전 ACL-protected per-registration route ID 추가
 
 ### Gate W4b — 방송 앱 가상 카메라 수신
 

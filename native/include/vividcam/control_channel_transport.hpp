@@ -8,6 +8,8 @@
 namespace vividcam {
 
 inline constexpr std::uint32_t kControlChannelTransportSchemaVersion = 1;
+inline constexpr std::wstring_view kVividCamPrimaryControlRoute =
+    L"vividcam.virtual-camera.source.{B3F8E8E4-1C65-4C10-9DB4-AD2B780A6401}";
 
 struct ControlChannelTransportSnapshot {
   std::uint32_t schema_version{kControlChannelTransportSchemaVersion};
@@ -23,9 +25,9 @@ struct ControlChannelTransportSnapshot {
   std::string last_error;
 };
 
-// Finds the registered VIVIDCAM camera endpoint without activating a media
-// source. The symbolic link is used only as opaque route input and is never
-// embedded directly in a named-pipe path.
+// Verifies that a registered VIVIDCAM endpoint has a nonempty symbolic link,
+// then returns the stable, non-secret single-camera source identity above.
+// The canonical route is hashed and is never embedded directly in a pipe path.
 [[nodiscard]] bool find_registered_vividcam_control_route(
     std::wstring& route, std::string& error);
 

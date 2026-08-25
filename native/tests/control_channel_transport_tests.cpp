@@ -89,6 +89,13 @@ int main() {
   assert(error.empty());
   constexpr std::wstring_view prefix =
       L"\\\\.\\pipe\\VIVIDCAM.Control.v1.";
+  assert(!vividcam::kVividCamPrimaryControlRoute.empty());
+  std::wstring primary_pipe_name;
+  assert(vividcam::make_vividcam_control_pipe_name(
+      vividcam::kVividCamPrimaryControlRoute, primary_pipe_name, error));
+  assert(primary_pipe_name ==
+         std::wstring(prefix) +
+             L"0929f54cd590114b325ccb3feaac79b18330489553d477a9b2d88109e7339f4f");
   assert(pipe_name.starts_with(prefix));
   assert(pipe_name.size() == prefix.size() + 64);
   assert(pipe_name.find(route) == std::wstring::npos);

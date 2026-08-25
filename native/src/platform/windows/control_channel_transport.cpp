@@ -935,6 +935,9 @@ bool find_registered_vividcam_control_route(std::wstring& route,
     error = "Registered VIVIDCAM virtual camera was not found";
     return false;
   }
+  // Registration and its symbolic link are validated above, but rendezvous is
+  // intentionally independent of Windows' per-activation link formatting.
+  route.assign(kVividCamPrimaryControlRoute);
   error.clear();
   return true;
 }
