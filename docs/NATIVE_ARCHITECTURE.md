@@ -52,6 +52,8 @@ latest-frame/backpressure, heartbeat·재연결, producer 부재 시 테스트 �
 - 완료 시각이 다음 프레임 경계를 넘으면 누락 프레임으로 계측합니다.
 - 실시간 방송에서는 오래된 프레임을 누적 처리하지 않고 최신 프레임으로 따라잡습니다.
 - SOOP 기본 프로필은 1920×1080 60p, TikTok 기본 프로필은 1080×1920 60p입니다.
+- W4b-0 테스트 패턴은 sample timestamp·duration의 논리적 60p 계약을 검증합니다. 실제
+  wall-clock pacing과 누락 프레임 계측은 W4b-1 엔진 출력 스케줄러에서 별도 검증합니다.
 
 ## 스레드 모델 초안
 

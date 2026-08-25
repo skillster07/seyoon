@@ -14,6 +14,8 @@ struct RegisteredVirtualCameraSmokeResult {
   std::uint32_t fps_numerator{0};
   std::uint32_t fps_denominator{1};
   std::uint32_t distinct_checksums{0};
+  std::uint32_t empty_callbacks{0};
+  std::uint32_t source_reader_flags{0};
   std::int64_t first_timestamp_100ns{0};
   std::int64_t last_timestamp_100ns{0};
   std::int64_t average_timestamp_delta_100ns{0};

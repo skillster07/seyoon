@@ -249,7 +249,10 @@ int main(int argc, char** argv) {
     }
     if (!result.passed) {
       std::cout << "[registered-source] failed after " << result.samples
-                << " sample(s): " << result.error << '\n';
+                << " sample(s), empty callbacks=" << result.empty_callbacks
+                << ", flags=0x" << std::hex << std::uppercase
+                << result.source_reader_flags << std::dec << ": "
+                << result.error << '\n';
       return 5;
     }
     std::cout << "[registered-source] samples=" << result.samples
@@ -262,7 +265,10 @@ int main(int argc, char** argv) {
               << result.minimum_timestamp_delta_100ns << '/'
               << result.maximum_timestamp_delta_100ns << " durations="
               << result.minimum_duration_100ns << ".."
-              << result.maximum_duration_100ns << " [valid]\n";
+              << result.maximum_duration_100ns << " empty_callbacks="
+              << result.empty_callbacks << " flags=0x" << std::hex
+              << std::uppercase << result.source_reader_flags << std::dec
+              << " [valid]\n";
     return 0;
   }
   if (install_camera || remove_camera) {

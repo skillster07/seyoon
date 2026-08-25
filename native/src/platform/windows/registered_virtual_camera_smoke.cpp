@@ -29,6 +29,13 @@ constexpr wchar_t kFriendlyName[] = L"VIVIDCAM Virtual Camera";
 constexpr std::uint32_t kExpectedWidth = 1920;
 constexpr std::uint32_t kExpectedHeight = 1080;
 constexpr std::uint32_t kExpectedFps = 60;
+constexpr DWORD kMediaTypeOrStreamChangedFlags =
+    MF_SOURCE_READERF_NEWSTREAM |
+    MF_SOURCE_READERF_NATIVEMEDIATYPECHANGED |
+    MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED;
+constexpr DWORD kRetryableNullReaderFlags =
+    MF_SOURCE_READERF_STREAMTICK |
+    MF_SOURCE_READERF_ALLEFFECTSREMOVED;
 
 std::string hresult_error(const char* operation, HRESULT status) {
   std::ostringstream message;
@@ -174,6 +181,7 @@ class ReaderCallback final : public IMFSourceReaderCallback {
     {
       std::lock_guard lock(mutex_);
       if (done_) return S_OK;
+      result_.source_reader_flags |= flags;
       if (FAILED(read_status)) {
         fail_locked(hresult_error("IMFSourceReaderCallback::OnReadSample",
                                   read_status));
@@ -187,25 +195,47 @@ class ReaderCallback final : public IMFSourceReaderCallback {
         fail_locked("Registered virtual camera ended its stream unexpectedly");
         return S_OK;
       }
-      if (!sample) {
-        fail_locked("Source reader returned a null video sample");
+      if ((flags & kMediaTypeOrStreamChangedFlags) != 0) {
+        fail_locked(
+            "Registered virtual camera changed its fixed stream or media type");
         return S_OK;
       }
-      if (!inspect_sample_locked(sample, reader_timestamp)) return S_OK;
-      if (result_.samples >= required_samples_) {
-        result_.distinct_checksums =
-            static_cast<std::uint32_t>(checksums_.size());
-        result_.average_timestamp_delta_100ns =
-            (result_.last_timestamp_100ns - result_.first_timestamp_100ns) /
-            static_cast<std::int64_t>(result_.samples - 1U);
-        if (checksums_.size() < 2) {
-          fail_locked("All received frames had the same content checksum");
+      if (!sample) {
+        if ((flags & kRetryableNullReaderFlags) == 0) {
+          std::ostringstream message;
+          message << "Source reader returned a null video sample without a "
+                     "non-terminal state flag (flags=0x"
+                  << std::hex << std::uppercase << flags << ')';
+          fail_locked(message.str());
           return S_OK;
         }
-        result_.passed = true;
-        done_ = true;
-        condition_.notify_all();
-        return S_OK;
+        ++empty_callbacks_;
+        result_.empty_callbacks = empty_callbacks_;
+        if (empty_callbacks_ > 16) {
+          std::ostringstream message;
+          message << "Source reader repeatedly returned a null video sample"
+                  << " (flags=0x" << std::hex << std::uppercase << flags
+                  << ')';
+          fail_locked(message.str());
+          return S_OK;
+        }
+      } else {
+        if (!inspect_sample_locked(sample, reader_timestamp)) return S_OK;
+        if (result_.samples >= required_samples_) {
+          result_.distinct_checksums =
+              static_cast<std::uint32_t>(checksums_.size());
+          result_.average_timestamp_delta_100ns =
+              (result_.last_timestamp_100ns - result_.first_timestamp_100ns) /
+              static_cast<std::int64_t>(result_.samples - 1U);
+          if (checksums_.size() < 2) {
+            fail_locked("All received frames had the same content checksum");
+            return S_OK;
+          }
+          result_.passed = true;
+          done_ = true;
+          condition_.notify_all();
+          return S_OK;
+        }
       }
       reader = reader_;
     }
@@ -274,6 +304,13 @@ class ReaderCallback final : public IMFSourceReaderCallback {
         return false;
       }
       const auto delta = sample_timestamp - result_.last_timestamp_100ns;
+      const auto delta_error = delta > expected_duration_
+                                   ? delta - expected_duration_
+                                   : expected_duration_ - delta;
+      if (delta_error > expected_duration_ / 4) {
+        fail_locked("Registered virtual camera timestamps do not match 60p cadence");
+        return false;
+      }
       if (result_.samples == 1) {
         result_.minimum_timestamp_delta_100ns = delta;
         result_.maximum_timestamp_delta_100ns = delta;
@@ -373,6 +410,7 @@ class ReaderCallback final : public IMFSourceReaderCallback {
   IMFSourceReader* reader_{nullptr};
   RegisteredVirtualCameraSmokeResult result_;
   std::vector<std::uint64_t> checksums_;
+  std::uint32_t empty_callbacks_{0};
   bool done_{false};
 };
 

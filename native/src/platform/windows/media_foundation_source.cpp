@@ -203,13 +203,27 @@ HRESULT fill_bgra_pattern(BYTE* scanline_zero, LONG pitch, BYTE* buffer_start,
 
 HRESULT create_synthetic_sample(IMFStreamDescriptor* descriptor, IUnknown* token,
                                 bool discontinuity, std::uint64_t frame_index,
-                                LONGLONG timestamp_100ns,
+                                LONGLONG previous_timestamp_100ns,
+                                LONGLONG* timestamp_100ns,
                                 IMFSample** output) {
-  if (!output) return E_POINTER;
+  if (!timestamp_100ns || !output) return E_POINTER;
+  *timestamp_100ns = 0;
   *output = nullptr;
 
   SyntheticMediaFormat format;
   HRESULT status = current_synthetic_media_format(descriptor, format);
+  LONGLONG duration = 0;
+  if (SUCCEEDED(status)) {
+    duration = static_cast<LONGLONG>(
+        (10'000'000ULL * format.frame_rate_denominator +
+         format.frame_rate_numerator / 2ULL) /
+        format.frame_rate_numerator);
+    if (duration <= 0) status = MF_E_INVALIDMEDIATYPE;
+  }
+  const auto sample_timestamp =
+      discontinuity || previous_timestamp_100ns < 0
+          ? MFGetSystemTime()
+          : previous_timestamp_100ns + duration;
   ComPtr<IMFMediaBuffer> buffer;
   if (SUCCEEDED(status)) {
     const auto fourcc = format.pixel_format == VirtualCameraPixelFormat::Nv12
@@ -247,15 +261,8 @@ HRESULT create_synthetic_sample(IMFStreamDescriptor* descriptor, IUnknown* token
   ComPtr<IMFSample> sample;
   if (SUCCEEDED(status)) status = MFCreateSample(&sample);
   if (SUCCEEDED(status)) status = sample->AddBuffer(buffer.Get());
-  if (SUCCEEDED(status)) status = sample->SetSampleTime(timestamp_100ns);
-  if (SUCCEEDED(status)) {
-    const auto duration = static_cast<LONGLONG>(
-        (10'000'000ULL * format.frame_rate_denominator +
-         format.frame_rate_numerator / 2ULL) /
-        format.frame_rate_numerator);
-    status = duration > 0 ? sample->SetSampleDuration(duration)
-                          : MF_E_INVALIDMEDIATYPE;
-  }
+  if (SUCCEEDED(status)) status = sample->SetSampleTime(sample_timestamp);
+  if (SUCCEEDED(status)) status = sample->SetSampleDuration(duration);
   if (SUCCEEDED(status)) {
     status = sample->SetUINT32(MFSampleExtension_CleanPoint, TRUE);
   }
@@ -266,6 +273,7 @@ HRESULT create_synthetic_sample(IMFStreamDescriptor* descriptor, IUnknown* token
     status = sample->SetUnknown(MFSampleExtension_Token, token);
   }
   if (FAILED(status)) return status;
+  *timestamp_100ns = sample_timestamp;
   *output = sample.Detach();
   return S_OK;
 }
@@ -340,14 +348,11 @@ class VirtualCameraMediaStream final : public IMFMediaStream2 {
     if (shutdown_) return MF_E_SHUTDOWN;
     if (!running_) return MF_E_INVALIDREQUEST;
     if (mode_ == MediaFoundationVirtualCameraSourceMode::SyntheticPattern) {
-      const auto system_time = MFGetSystemTime();
-      const auto sample_time = system_time > last_sample_time_100ns_
-                                   ? system_time
-                                   : last_sample_time_100ns_ + 1;
+      LONGLONG sample_time = 0;
       ComPtr<IMFSample> sample;
       HRESULT status = create_synthetic_sample(
-          descriptor_.Get(), token, first_sample_, frame_index_, sample_time,
-          &sample);
+          descriptor_.Get(), token, first_sample_, frame_index_,
+          last_sample_time_100ns_, &sample_time, &sample);
       if (SUCCEEDED(status)) {
         status = events_->QueueEventParamUnk(
             MEMediaSample, GUID_NULL, S_OK, sample.Get());
