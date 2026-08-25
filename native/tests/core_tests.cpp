@@ -332,6 +332,11 @@ int main() {
   invalid_registration = session_registration;
   invalid_registration.access = VirtualCameraAccess::AllUsers;
   assert(!invalid_registration.valid());
+  auto persistent_registration = session_registration;
+  persistent_registration.lifetime = VirtualCameraLifetime::System;
+  assert(persistent_registration.valid());
+  persistent_registration.access = VirtualCameraAccess::AllUsers;
+  assert(persistent_registration.valid());
 
   std::string conversion_error;
   const std::vector<std::uint8_t> black_bgra(16, 0);

@@ -3,7 +3,8 @@
 namespace vividcam {
 
 NativeMediaFoundationHandle create_media_foundation_virtual_camera_source(
-    const OutputProfile&, std::string& error) {
+    const OutputProfile&, std::string& error,
+    MediaFoundationVirtualCameraSourceMode) {
   error = "Media Foundation virtual camera sources are available on Windows only";
   return {};
 }

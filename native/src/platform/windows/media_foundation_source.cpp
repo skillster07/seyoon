@@ -10,8 +10,11 @@
 #include <devicetopology.h>
 #include <wrl/client.h>
 
+#include <array>
 #include <atomic>
+#include <cstdint>
 #include <deque>
+#include <limits>
 #include <mutex>
 #include <new>
 #include <utility>
@@ -32,12 +35,251 @@ NativeMediaFoundationHandle own_native(Interface* pointer) {
 
 class VirtualCameraMediaSource;
 
+struct SyntheticMediaFormat {
+  std::uint32_t width{0};
+  std::uint32_t height{0};
+  std::uint32_t frame_rate_numerator{0};
+  std::uint32_t frame_rate_denominator{0};
+  VirtualCameraPixelFormat pixel_format{VirtualCameraPixelFormat::Nv12};
+};
+
+HRESULT current_synthetic_media_format(IMFStreamDescriptor* descriptor,
+                                       SyntheticMediaFormat& format) {
+  if (!descriptor) return E_POINTER;
+  ComPtr<IMFMediaTypeHandler> handler;
+  HRESULT status = descriptor->GetMediaTypeHandler(&handler);
+  ComPtr<IMFMediaType> media_type;
+  if (SUCCEEDED(status)) status = handler->GetCurrentMediaType(&media_type);
+
+  GUID major_type{};
+  GUID subtype{};
+  if (SUCCEEDED(status)) status = media_type->GetGUID(MF_MT_MAJOR_TYPE, &major_type);
+  if (SUCCEEDED(status)) status = media_type->GetGUID(MF_MT_SUBTYPE, &subtype);
+  if (SUCCEEDED(status) && major_type != MFMediaType_Video) {
+    status = MF_E_INVALIDMEDIATYPE;
+  }
+  if (SUCCEEDED(status)) {
+    status = MFGetAttributeSize(media_type.Get(), MF_MT_FRAME_SIZE,
+                                &format.width, &format.height);
+  }
+  if (SUCCEEDED(status)) {
+    status = MFGetAttributeRatio(media_type.Get(), MF_MT_FRAME_RATE,
+                                 &format.frame_rate_numerator,
+                                 &format.frame_rate_denominator);
+  }
+  if (FAILED(status)) return status;
+
+  if (subtype == MFVideoFormat_NV12) {
+    format.pixel_format = VirtualCameraPixelFormat::Nv12;
+    if ((format.width & 1U) != 0 || (format.height & 1U) != 0) {
+      return MF_E_INVALIDMEDIATYPE;
+    }
+  } else if (subtype == MFVideoFormat_ARGB32) {
+    format.pixel_format = VirtualCameraPixelFormat::Bgra;
+  } else {
+    return MF_E_INVALIDMEDIATYPE;
+  }
+  if (format.width == 0 || format.height == 0 ||
+      format.frame_rate_numerator == 0 ||
+      format.frame_rate_denominator == 0) {
+    return MF_E_INVALIDMEDIATYPE;
+  }
+
+  const auto pixels = static_cast<std::uint64_t>(format.width) * format.height;
+  const auto sample_size = format.pixel_format == VirtualCameraPixelFormat::Nv12
+                               ? pixels * 3ULL / 2ULL
+                               : pixels * 4ULL;
+  if (sample_size == 0 ||
+      sample_size > static_cast<std::uint64_t>(
+                        std::numeric_limits<DWORD>::max())) {
+    return MF_E_INVALIDMEDIATYPE;
+  }
+  return S_OK;
+}
+
+bool buffer_range_contains(const BYTE* buffer_start, DWORD buffer_length,
+                           const BYTE* row, std::size_t row_bytes) {
+  const auto start = reinterpret_cast<std::uintptr_t>(buffer_start);
+  const auto address = reinterpret_cast<std::uintptr_t>(row);
+  const auto end = start + buffer_length;
+  return end >= start && address >= start && address <= end &&
+         row_bytes <= end - address;
+}
+
+BYTE* scanline_at(BYTE* scanline_zero, LONG pitch, std::uint32_t row) {
+  const auto address = reinterpret_cast<std::intptr_t>(scanline_zero) +
+                       static_cast<std::intptr_t>(pitch) * row;
+  return reinterpret_cast<BYTE*>(address);
+}
+
+HRESULT fill_nv12_pattern(BYTE* scanline_zero, LONG pitch, BYTE* buffer_start,
+                          DWORD buffer_length,
+                          const SyntheticMediaFormat& format,
+                          std::uint64_t frame_index) {
+  constexpr std::array<BYTE, 8> kLuma{235, 210, 170, 145, 106, 81, 41, 16};
+  constexpr std::array<BYTE, 8> kChromaU{128, 16, 166, 54, 202, 90, 240, 128};
+  constexpr std::array<BYTE, 8> kChromaV{128, 146, 16, 34, 222, 240, 110, 128};
+  if (!scanline_zero || !buffer_start || pitch <= 0 ||
+      static_cast<std::uint32_t>(pitch) < format.width) {
+    return MF_E_INVALIDMEDIATYPE;
+  }
+  const auto shift = static_cast<std::uint32_t>(
+      (frame_index * 8ULL) % format.width);
+  for (std::uint32_t y = 0; y < format.height; ++y) {
+    auto* row = scanline_at(scanline_zero, pitch, y);
+    if (!buffer_range_contains(buffer_start, buffer_length, row, format.width)) {
+      return MF_E_BUFFERTOOSMALL;
+    }
+    for (std::uint32_t x = 0; x < format.width; ++x) {
+      const auto shifted = (x + shift) % format.width;
+      const auto bar = static_cast<std::size_t>(
+          static_cast<std::uint64_t>(shifted) * kLuma.size() / format.width);
+      row[x] = kLuma[bar];
+    }
+  }
+
+  auto* chroma = scanline_at(scanline_zero, pitch, format.height);
+  for (std::uint32_t y = 0; y < format.height / 2U; ++y) {
+    auto* row = scanline_at(chroma, pitch, y);
+    if (!buffer_range_contains(buffer_start, buffer_length, row, format.width)) {
+      return MF_E_BUFFERTOOSMALL;
+    }
+    for (std::uint32_t x = 0; x < format.width; x += 2U) {
+      const auto shifted = (x + shift) % format.width;
+      const auto bar = static_cast<std::size_t>(
+          static_cast<std::uint64_t>(shifted) * kChromaU.size() / format.width);
+      row[x] = kChromaU[bar];
+      row[x + 1U] = kChromaV[bar];
+    }
+  }
+  return S_OK;
+}
+
+HRESULT fill_bgra_pattern(BYTE* scanline_zero, LONG pitch, BYTE* buffer_start,
+                          DWORD buffer_length,
+                          const SyntheticMediaFormat& format,
+                          std::uint64_t frame_index) {
+  struct Bgra {
+    BYTE blue;
+    BYTE green;
+    BYTE red;
+    BYTE alpha;
+  };
+  constexpr std::array<Bgra, 8> kBars{{
+      {255, 255, 255, 255}, {0, 255, 255, 255}, {255, 255, 0, 255},
+      {0, 255, 0, 255},     {255, 0, 255, 255}, {0, 0, 255, 255},
+      {255, 0, 0, 255},     {0, 0, 0, 255},
+  }};
+  const auto row_bytes = static_cast<std::uint64_t>(format.width) * sizeof(Bgra);
+  const auto absolute_pitch = pitch < 0
+                                  ? -static_cast<std::int64_t>(pitch)
+                                  : static_cast<std::int64_t>(pitch);
+  if (!scanline_zero || !buffer_start ||
+      row_bytes > static_cast<std::uint64_t>(absolute_pitch)) {
+    return MF_E_INVALIDMEDIATYPE;
+  }
+  const auto shift = static_cast<std::uint32_t>(
+      (frame_index * 8ULL) % format.width);
+  for (std::uint32_t y = 0; y < format.height; ++y) {
+    auto* row = scanline_at(scanline_zero, pitch, y);
+    if (!buffer_range_contains(buffer_start, buffer_length, row,
+                               static_cast<std::size_t>(row_bytes))) {
+      return MF_E_BUFFERTOOSMALL;
+    }
+    for (std::uint32_t x = 0; x < format.width; ++x) {
+      const auto shifted = (x + shift) % format.width;
+      const auto bar = static_cast<std::size_t>(
+          static_cast<std::uint64_t>(shifted) * kBars.size() / format.width);
+      const auto& color = kBars[bar];
+      auto* pixel = row + static_cast<std::size_t>(x) * sizeof(Bgra);
+      pixel[0] = color.blue;
+      pixel[1] = color.green;
+      pixel[2] = color.red;
+      pixel[3] = color.alpha;
+    }
+  }
+  return S_OK;
+}
+
+HRESULT create_synthetic_sample(IMFStreamDescriptor* descriptor, IUnknown* token,
+                                bool discontinuity, std::uint64_t frame_index,
+                                LONGLONG timestamp_100ns,
+                                IMFSample** output) {
+  if (!output) return E_POINTER;
+  *output = nullptr;
+
+  SyntheticMediaFormat format;
+  HRESULT status = current_synthetic_media_format(descriptor, format);
+  ComPtr<IMFMediaBuffer> buffer;
+  if (SUCCEEDED(status)) {
+    const auto fourcc = format.pixel_format == VirtualCameraPixelFormat::Nv12
+                            ? MFVideoFormat_NV12.Data1
+                            : MFVideoFormat_ARGB32.Data1;
+    status = MFCreate2DMediaBuffer(
+        format.width, format.height, fourcc, FALSE, &buffer);
+  }
+  ComPtr<IMF2DBuffer2> buffer_2d;
+  if (SUCCEEDED(status)) status = buffer.As(&buffer_2d);
+  BYTE* scanline_zero = nullptr;
+  LONG pitch = 0;
+  BYTE* buffer_start = nullptr;
+  DWORD buffer_length = 0;
+  bool locked = false;
+  if (SUCCEEDED(status)) {
+    status = buffer_2d->Lock2DSize(
+        MF2DBuffer_LockFlags_Write, &scanline_zero, &pitch,
+        &buffer_start, &buffer_length);
+    locked = SUCCEEDED(status);
+  }
+  if (SUCCEEDED(status)) {
+    if (format.pixel_format == VirtualCameraPixelFormat::Nv12) {
+      status = fill_nv12_pattern(
+          scanline_zero, pitch, buffer_start, buffer_length, format, frame_index);
+    } else {
+      status = fill_bgra_pattern(
+          scanline_zero, pitch, buffer_start, buffer_length, format, frame_index);
+    }
+  }
+  if (locked) {
+    const HRESULT unlock_status = buffer_2d->Unlock2D();
+    if (SUCCEEDED(status)) status = unlock_status;
+  }
+  ComPtr<IMFSample> sample;
+  if (SUCCEEDED(status)) status = MFCreateSample(&sample);
+  if (SUCCEEDED(status)) status = sample->AddBuffer(buffer.Get());
+  if (SUCCEEDED(status)) status = sample->SetSampleTime(timestamp_100ns);
+  if (SUCCEEDED(status)) {
+    const auto duration = static_cast<LONGLONG>(
+        (10'000'000ULL * format.frame_rate_denominator +
+         format.frame_rate_numerator / 2ULL) /
+        format.frame_rate_numerator);
+    status = duration > 0 ? sample->SetSampleDuration(duration)
+                          : MF_E_INVALIDMEDIATYPE;
+  }
+  if (SUCCEEDED(status)) {
+    status = sample->SetUINT32(MFSampleExtension_CleanPoint, TRUE);
+  }
+  if (SUCCEEDED(status) && discontinuity) {
+    status = sample->SetUINT32(MFSampleExtension_Discontinuity, TRUE);
+  }
+  if (SUCCEEDED(status) && token) {
+    status = sample->SetUnknown(MFSampleExtension_Token, token);
+  }
+  if (FAILED(status)) return status;
+  *output = sample.Detach();
+  return S_OK;
+}
+
 class VirtualCameraMediaStream final : public IMFMediaStream2 {
  public:
   VirtualCameraMediaStream(VirtualCameraMediaSource* source,
-                           IMFStreamDescriptor* descriptor)
-      : source_(source), descriptor_(descriptor) {
-    MFCreateEventQueue(&events_);
+                           IMFStreamDescriptor* descriptor,
+                           MediaFoundationVirtualCameraSourceMode mode)
+      : source_(source), descriptor_(descriptor), mode_(mode),
+        initialization_status_(MFCreateEventQueue(&events_)) {}
+
+  [[nodiscard]] HRESULT initialization_status() const noexcept {
+    return initialization_status_;
   }
 
   STDMETHODIMP QueryInterface(REFIID iid, void** object) override;
@@ -57,15 +299,32 @@ class VirtualCameraMediaStream final : public IMFMediaStream2 {
     return events->GetEvent(flags, event);
   }
   STDMETHODIMP BeginGetEvent(IMFAsyncCallback* callback, IUnknown* state) override {
-    return events_ ? events_->BeginGetEvent(callback, state) : MF_E_SHUTDOWN;
+    ComPtr<IMFMediaEventQueue> events;
+    {
+      std::scoped_lock lock(mutex_);
+      if (shutdown_ || !events_) return MF_E_SHUTDOWN;
+      events = events_;
+    }
+    return events->BeginGetEvent(callback, state);
   }
   STDMETHODIMP EndGetEvent(IMFAsyncResult* result, IMFMediaEvent** event) override {
-    return events_ ? events_->EndGetEvent(result, event) : MF_E_SHUTDOWN;
+    ComPtr<IMFMediaEventQueue> events;
+    {
+      std::scoped_lock lock(mutex_);
+      if (shutdown_ || !events_) return MF_E_SHUTDOWN;
+      events = events_;
+    }
+    return events->EndGetEvent(result, event);
   }
   STDMETHODIMP QueueEvent(MediaEventType type, REFGUID extended_type,
                           HRESULT status, const PROPVARIANT* value) override {
-    return events_ ? events_->QueueEventParamVar(type, extended_type, status, value)
-                   : MF_E_SHUTDOWN;
+    ComPtr<IMFMediaEventQueue> events;
+    {
+      std::scoped_lock lock(mutex_);
+      if (shutdown_ || !events_) return MF_E_SHUTDOWN;
+      events = events_;
+    }
+    return events->QueueEventParamVar(type, extended_type, status, value);
   }
   STDMETHODIMP GetMediaSource(IMFMediaSource** source) override;
   STDMETHODIMP GetStreamDescriptor(IMFStreamDescriptor** descriptor) override {
@@ -80,6 +339,26 @@ class VirtualCameraMediaStream final : public IMFMediaStream2 {
     std::scoped_lock lock(mutex_);
     if (shutdown_) return MF_E_SHUTDOWN;
     if (!running_) return MF_E_INVALIDREQUEST;
+    if (mode_ == MediaFoundationVirtualCameraSourceMode::SyntheticPattern) {
+      const auto system_time = MFGetSystemTime();
+      const auto sample_time = system_time > last_sample_time_100ns_
+                                   ? system_time
+                                   : last_sample_time_100ns_ + 1;
+      ComPtr<IMFSample> sample;
+      HRESULT status = create_synthetic_sample(
+          descriptor_.Get(), token, first_sample_, frame_index_, sample_time,
+          &sample);
+      if (SUCCEEDED(status)) {
+        status = events_->QueueEventParamUnk(
+            MEMediaSample, GUID_NULL, S_OK, sample.Get());
+      }
+      if (SUCCEEDED(status)) {
+        first_sample_ = false;
+        last_sample_time_100ns_ = sample_time;
+        ++frame_index_;
+      }
+      return status;
+    }
     if (requests_.size() >= 8) return MF_E_NOTACCEPTING;
     requests_.emplace_back(token);
     return S_OK;
@@ -91,9 +370,11 @@ class VirtualCameraMediaStream final : public IMFMediaStream2 {
         state != MF_STREAM_STATE_PAUSED) {
       return MF_E_INVALID_STATE_TRANSITION;
     }
+    const bool was_running = running_;
     state_ = state;
     running_ = state == MF_STREAM_STATE_RUNNING;
     if (!running_) requests_.clear();
+    if (running_ && !was_running) first_sample_ = true;
     return S_OK;
   }
   STDMETHODIMP GetStreamState(MF_STREAM_STATE* state) override {
@@ -104,12 +385,14 @@ class VirtualCameraMediaStream final : public IMFMediaStream2 {
     return S_OK;
   }
 
-  HRESULT Start() {
+  HRESULT Start(const PROPVARIANT* start_time) {
     std::scoped_lock lock(mutex_);
     if (shutdown_) return MF_E_SHUTDOWN;
     running_ = true;
     state_ = MF_STREAM_STATE_RUNNING;
-    return events_->QueueEventParamVar(MEStreamStarted, GUID_NULL, S_OK, nullptr);
+    first_sample_ = true;
+    return events_->QueueEventParamVar(
+        MEStreamStarted, GUID_NULL, S_OK, start_time);
   }
   HRESULT Stop() {
     std::scoped_lock lock(mutex_);
@@ -123,6 +406,9 @@ class VirtualCameraMediaStream final : public IMFMediaStream2 {
     if (!sample) return E_POINTER;
     std::scoped_lock lock(mutex_);
     if (shutdown_) return MF_E_SHUTDOWN;
+    if (mode_ != MediaFoundationVirtualCameraSourceMode::ExternalSubmit) {
+      return MF_E_NOTACCEPTING;
+    }
     if (!running_ || requests_.empty()) return MF_E_NOTACCEPTING;
     auto token = std::move(requests_.front());
     requests_.pop_front();
@@ -153,7 +439,13 @@ class VirtualCameraMediaStream final : public IMFMediaStream2 {
   ComPtr<IMFStreamDescriptor> descriptor_;
   ComPtr<IMFMediaEventQueue> events_;
   std::deque<ComPtr<IUnknown>> requests_;
+  MediaFoundationVirtualCameraSourceMode mode_{
+      MediaFoundationVirtualCameraSourceMode::ExternalSubmit};
+  HRESULT initialization_status_{E_UNEXPECTED};
+  std::uint64_t frame_index_{0};
+  LONGLONG last_sample_time_100ns_{-1};
   MF_STREAM_STATE state_{MF_STREAM_STATE_STOPPED};
+  bool first_sample_{true};
   bool running_{false};
   bool shutdown_{false};
 };
@@ -163,8 +455,10 @@ class VirtualCameraMediaSource final : public IMFMediaSourceEx,
                                        public IKsControl,
                                        public IMFSampleAllocatorControl {
  public:
-  HRESULT Initialize(const OutputProfile& profile) {
+  HRESULT Initialize(const OutputProfile& profile,
+                     MediaFoundationVirtualCameraSourceMode mode) {
     if (!profile.valid()) return E_INVALIDARG;
+    mode_ = mode;
     HRESULT status = MFCreateEventQueue(&events_);
     if (SUCCEEDED(status)) status = MFCreateAttributes(&source_attributes_, 1);
     if (FAILED(status)) return status;
@@ -190,8 +484,14 @@ class VirtualCameraMediaSource final : public IMFMediaSourceEx,
           MF_DEVICESTREAM_ATTRIBUTE_FRAMESOURCE_TYPES, MFFrameSourceTypes_Color);
     }
     if (FAILED(status)) return status;
-    auto* stream = new (std::nothrow) VirtualCameraMediaStream(this, descriptor_.Get());
+    auto* stream = new (std::nothrow)
+        VirtualCameraMediaStream(this, descriptor_.Get(), mode_);
     if (!stream) return E_OUTOFMEMORY;
+    if (FAILED(stream->initialization_status())) {
+      const auto stream_status = stream->initialization_status();
+      stream->Release();
+      return stream_status;
+    }
     stream_.Attach(stream);
     return status;
   }
@@ -230,15 +530,32 @@ class VirtualCameraMediaSource final : public IMFMediaSourceEx,
     return events->GetEvent(flags, event);
   }
   STDMETHODIMP BeginGetEvent(IMFAsyncCallback* callback, IUnknown* state) override {
-    return events_ ? events_->BeginGetEvent(callback, state) : MF_E_SHUTDOWN;
+    ComPtr<IMFMediaEventQueue> events;
+    {
+      std::scoped_lock lock(mutex_);
+      if (shutdown_ || !events_) return MF_E_SHUTDOWN;
+      events = events_;
+    }
+    return events->BeginGetEvent(callback, state);
   }
   STDMETHODIMP EndGetEvent(IMFAsyncResult* result, IMFMediaEvent** event) override {
-    return events_ ? events_->EndGetEvent(result, event) : MF_E_SHUTDOWN;
+    ComPtr<IMFMediaEventQueue> events;
+    {
+      std::scoped_lock lock(mutex_);
+      if (shutdown_ || !events_) return MF_E_SHUTDOWN;
+      events = events_;
+    }
+    return events->EndGetEvent(result, event);
   }
   STDMETHODIMP QueueEvent(MediaEventType type, REFGUID extended_type,
                           HRESULT status, const PROPVARIANT* value) override {
-    return events_ ? events_->QueueEventParamVar(type, extended_type, status, value)
-                   : MF_E_SHUTDOWN;
+    ComPtr<IMFMediaEventQueue> events;
+    {
+      std::scoped_lock lock(mutex_);
+      if (shutdown_ || !events_) return MF_E_SHUTDOWN;
+      events = events_;
+    }
+    return events->QueueEventParamVar(type, extended_type, status, value);
   }
   STDMETHODIMP GetCharacteristics(DWORD* characteristics) override {
     if (!characteristics) return E_POINTER;
@@ -254,27 +571,69 @@ class VirtualCameraMediaSource final : public IMFMediaSourceEx,
     return presentation_->Clone(descriptor);
   }
   STDMETHODIMP Start(IMFPresentationDescriptor* descriptor, const GUID* time_format,
-                     const PROPVARIANT* position) override {
+                      const PROPVARIANT* position) override {
     if (!descriptor || !position) return E_INVALIDARG;
     if (time_format && *time_format != GUID_NULL) return MF_E_UNSUPPORTED_TIME_FORMAT;
     std::scoped_lock lock(mutex_);
     if (shutdown_) return MF_E_SHUTDOWN;
-    HRESULT status = stream_->Start();
-    if (SUCCEEDED(status) && !announced_) {
-      status = events_->QueueEventParamUnk(MENewStream, GUID_NULL, S_OK, stream_.Get());
-      announced_ = SUCCEEDED(status);
-    }
+    DWORD stream_count = 0;
+    HRESULT status = descriptor->GetStreamDescriptorCount(&stream_count);
+    if (FAILED(status)) return status;
+    if (stream_count != 1) return E_INVALIDARG;
+
+    BOOL selected = FALSE;
+    ComPtr<IMFStreamDescriptor> requested_descriptor;
+    status = descriptor->GetStreamDescriptorByIndex(
+        0, &selected, &requested_descriptor);
+    if (SUCCEEDED(status) && !selected) return E_INVALIDARG;
+    DWORD requested_stream_id = 0;
     if (SUCCEEDED(status)) {
-      status = events_->QueueEventParamVar(MESourceStarted, GUID_NULL, S_OK, nullptr);
+      status = requested_descriptor->GetStreamIdentifier(&requested_stream_id);
     }
+    if (SUCCEEDED(status) && requested_stream_id != 0) status = MF_E_NOT_FOUND;
+
+    if (SUCCEEDED(status)) {
+      ComPtr<IMFMediaTypeHandler> requested_handler;
+      ComPtr<IMFMediaTypeHandler> stream_handler;
+      ComPtr<IMFMediaType> requested_type;
+      status = requested_descriptor->GetMediaTypeHandler(&requested_handler);
+      if (SUCCEEDED(status)) {
+        status = requested_handler->GetCurrentMediaType(&requested_type);
+      }
+      if (SUCCEEDED(status)) status = descriptor_->GetMediaTypeHandler(&stream_handler);
+      if (SUCCEEDED(status)) status = stream_handler->SetCurrentMediaType(requested_type.Get());
+    }
+
+    if (SUCCEEDED(status)) {
+      const auto stream_event = announced_ ? MEUpdatedStream : MENewStream;
+      status = events_->QueueEventParamUnk(
+          stream_event, GUID_NULL, S_OK, stream_.Get());
+      if (SUCCEEDED(status)) announced_ = true;
+    }
+    PROPVARIANT start_time;
+    PropVariantInit(&start_time);
+    start_time.vt = VT_I8;
+    start_time.hVal.QuadPart = MFGetSystemTime();
+    if (SUCCEEDED(status)) status = stream_->Start(&start_time);
+    if (SUCCEEDED(status)) {
+      status = events_->QueueEventParamVar(
+          MESourceStarted, GUID_NULL, S_OK, &start_time);
+    }
+    if (SUCCEEDED(status)) started_ = true;
+    PropVariantClear(&start_time);
     return status;
   }
   STDMETHODIMP Stop() override {
     std::scoped_lock lock(mutex_);
     if (shutdown_) return MF_E_SHUTDOWN;
+    if (!started_) return MF_E_INVALID_STATE_TRANSITION;
     HRESULT status = stream_->Stop();
     if (SUCCEEDED(status)) {
       status = events_->QueueEventParamVar(MESourceStopped, GUID_NULL, S_OK, nullptr);
+    }
+    if (SUCCEEDED(status)) {
+      started_ = false;
+      announced_ = false;
     }
     return status;
   }
@@ -351,7 +710,9 @@ class VirtualCameraMediaSource final : public IMFMediaSourceEx,
     std::scoped_lock lock(mutex_);
     if (shutdown_) return MF_E_SHUTDOWN;
     *input_stream_id = stream_id;
-    *usage = MFSampleAllocatorUsage_DoesNotAllocate;
+    *usage = mode_ == MediaFoundationVirtualCameraSourceMode::SyntheticPattern
+                 ? MFSampleAllocatorUsage_UsesCustomAllocator
+                 : MFSampleAllocatorUsage_DoesNotAllocate;
     return S_OK;
   }
 
@@ -392,7 +753,10 @@ class VirtualCameraMediaSource final : public IMFMediaSourceEx,
   ComPtr<IMFPresentationDescriptor> presentation_;
   ComPtr<VirtualCameraMediaStream> stream_;
   ComPtr<IMFAttributes> source_attributes_;
+  MediaFoundationVirtualCameraSourceMode mode_{
+      MediaFoundationVirtualCameraSourceMode::ExternalSubmit};
   bool announced_{false};
+  bool started_{false};
   bool shutdown_{false};
 };
 
@@ -419,13 +783,14 @@ STDMETHODIMP VirtualCameraMediaStream::GetMediaSource(IMFMediaSource** source) {
 } // namespace
 
 NativeMediaFoundationHandle create_media_foundation_virtual_camera_source(
-    const OutputProfile& profile, std::string& error) {
+    const OutputProfile& profile, std::string& error,
+    MediaFoundationVirtualCameraSourceMode mode) {
   auto* source = new (std::nothrow) VirtualCameraMediaSource();
   if (!source) {
     error = "Unable to allocate the virtual camera IMFMediaSource";
     return {};
   }
-  const auto status = source->Initialize(profile);
+  const auto status = source->Initialize(profile, mode);
   if (FAILED(status)) {
     source->Release();
     error = "Unable to initialize the virtual camera IMFMediaSource/IMFMediaStream";

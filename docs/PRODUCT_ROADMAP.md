@@ -33,8 +33,10 @@ TikTok LIVE Studio, OBS, SOOP에서 바로 사용할 수 있으며 YYCam Pro보�
 
 **2026-08-26 엔지니어링 기준선:** W1 최선 60 FPS 캡처, W2 GPU surface,
 W3 1080p60 오프스크린 합성·NV12 변환, W4a COM activation·등록 수명주기가
-로컬 Windows에서 통과했습니다. 실제 1080p60 입력과 Frame Server producer bridge,
-OBS·SOOP·TikTok LIVE Studio 수신 W4b는 남아 있습니다.
+로컬 Windows에서 통과했습니다. W4b-0 영구 등록 소스의 이동 컬러바와 실제
+Media Foundation consumer smoke gate는 구현되어 새 DLL 재설치 검증을 기다립니다.
+실제 1080p60 입력과 Frame Server producer bridge, OBS·SOOP·TikTok LIVE Studio
+수신 W4b는 남아 있습니다.
 
 - Windows 카메라 캡처(Media Foundation)
 - Direct3D 기반 GPU 합성

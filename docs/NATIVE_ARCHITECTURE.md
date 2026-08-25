@@ -94,7 +94,7 @@ latest-frame/backpressure, heartbeat·재연결, producer 부재 시 테스트 �
 19. Windows IMFMediaSource/IMFMediaStream COM 객체, Start/Stop/Shutdown, bounded RequestSample, GPU event 전달 — 구현, 프로세스 내부 검증 통과
 20. MFCreateVirtualCamera 세션/시스템·사용자 접근 등록, Start/Stop/Remove 수명주기 — 구현, Windows W4a 통과
 21. IMFActivate COM class factory DLL, all-users 설치·제거·activation probe — 구현, Windows W4a 통과
-22. W4b-0 영구 등록 소스의 테스트 패턴과 실제 Media Foundation consumer 수신
+22. W4b-0 System+CurrentUser 영구 등록, NV12/BGRA 이동 컬러바, symbolic link 기반 실제 Media Foundation consumer smoke — 구현, 새 DLL 재설치 후 로컬 gate 대기
 23. 장시간 `vividcam_engine` 호스트와 producer 상태·heartbeat·텔레메트리
 24. 엔진 사용자 세션 ↔ Frame Server Local Service 사이 versioned IPC latest-frame 브리지
 25. D3D11 공유 텍스처 IPC와 CPU fallback, device-lost·재연결 복구

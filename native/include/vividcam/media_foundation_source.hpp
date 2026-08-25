@@ -7,8 +7,15 @@
 
 namespace vividcam {
 
+enum class MediaFoundationVirtualCameraSourceMode {
+  ExternalSubmit,
+  SyntheticPattern,
+};
+
 [[nodiscard]] NativeMediaFoundationHandle create_media_foundation_virtual_camera_source(
-    const OutputProfile& profile, std::string& error);
+    const OutputProfile& profile, std::string& error,
+    MediaFoundationVirtualCameraSourceMode mode =
+        MediaFoundationVirtualCameraSourceMode::ExternalSubmit);
 [[nodiscard]] bool submit_media_foundation_virtual_camera_sample(
     const NativeMediaFoundationHandle& source,
     const NativeMediaFoundationHandle& sample, std::string& error);
