@@ -1,5 +1,6 @@
 #include "vividcam/media_foundation_source.hpp"
 
+#include "vividcam/control_channel_transport.hpp"
 #include "vividcam/virtual_camera_media_type.hpp"
 
 #include <Windows.h>
@@ -95,6 +96,25 @@ HRESULT current_synthetic_media_format(IMFStreamDescriptor* descriptor,
     return MF_E_INVALIDMEDIATYPE;
   }
   return S_OK;
+}
+
+std::wstring copy_string_attribute(IMFAttributes* attributes,
+                                   REFGUID key) noexcept {
+  if (!attributes) return {};
+
+  PWSTR value = nullptr;
+  UINT32 length = 0;
+  const HRESULT status = attributes->GetAllocatedString(key, &value, &length);
+  std::wstring result;
+  if (SUCCEEDED(status) && value) {
+    try {
+      result.assign(value, length);
+    } catch (...) {
+      result.clear();
+    }
+  }
+  CoTaskMemFree(value);
+  return result;
 }
 
 bool buffer_range_contains(const BYTE* buffer_start, DWORD buffer_length,
@@ -579,67 +599,96 @@ class VirtualCameraMediaSource final : public IMFMediaSourceEx,
                       const PROPVARIANT* position) override {
     if (!descriptor || !position) return E_INVALIDARG;
     if (time_format && *time_format != GUID_NULL) return MF_E_UNSUPPORTED_TIME_FORMAT;
-    std::scoped_lock lock(mutex_);
-    if (shutdown_) return MF_E_SHUTDOWN;
-    DWORD stream_count = 0;
-    HRESULT status = descriptor->GetStreamDescriptorCount(&stream_count);
-    if (FAILED(status)) return status;
-    if (stream_count != 1) return E_INVALIDARG;
+    std::scoped_lock lifecycle_lock(control_lifecycle_mutex_);
+    std::wstring control_route;
+    HRESULT status = S_OK;
+    {
+      std::scoped_lock lock(mutex_);
+      if (shutdown_) return MF_E_SHUTDOWN;
+      DWORD stream_count = 0;
+      status = descriptor->GetStreamDescriptorCount(&stream_count);
+      if (FAILED(status)) return status;
+      if (stream_count != 1) return E_INVALIDARG;
 
-    BOOL selected = FALSE;
-    ComPtr<IMFStreamDescriptor> requested_descriptor;
-    status = descriptor->GetStreamDescriptorByIndex(
-        0, &selected, &requested_descriptor);
-    if (SUCCEEDED(status) && !selected) return E_INVALIDARG;
-    DWORD requested_stream_id = 0;
-    if (SUCCEEDED(status)) {
-      status = requested_descriptor->GetStreamIdentifier(&requested_stream_id);
-    }
-    if (SUCCEEDED(status) && requested_stream_id != 0) status = MF_E_NOT_FOUND;
-
-    if (SUCCEEDED(status)) {
-      ComPtr<IMFMediaTypeHandler> requested_handler;
-      ComPtr<IMFMediaTypeHandler> stream_handler;
-      ComPtr<IMFMediaType> requested_type;
-      status = requested_descriptor->GetMediaTypeHandler(&requested_handler);
+      BOOL selected = FALSE;
+      ComPtr<IMFStreamDescriptor> requested_descriptor;
+      status = descriptor->GetStreamDescriptorByIndex(
+          0, &selected, &requested_descriptor);
+      if (SUCCEEDED(status) && !selected) return E_INVALIDARG;
+      DWORD requested_stream_id = 0;
       if (SUCCEEDED(status)) {
-        status = requested_handler->GetCurrentMediaType(&requested_type);
+        status = requested_descriptor->GetStreamIdentifier(&requested_stream_id);
       }
-      if (SUCCEEDED(status)) status = descriptor_->GetMediaTypeHandler(&stream_handler);
-      if (SUCCEEDED(status)) status = stream_handler->SetCurrentMediaType(requested_type.Get());
+      if (SUCCEEDED(status) && requested_stream_id != 0) status = MF_E_NOT_FOUND;
+
+      if (SUCCEEDED(status)) {
+        ComPtr<IMFMediaTypeHandler> requested_handler;
+        ComPtr<IMFMediaTypeHandler> stream_handler;
+        ComPtr<IMFMediaType> requested_type;
+        status = requested_descriptor->GetMediaTypeHandler(&requested_handler);
+        if (SUCCEEDED(status)) {
+          status = requested_handler->GetCurrentMediaType(&requested_type);
+        }
+        if (SUCCEEDED(status)) {
+          status = descriptor_->GetMediaTypeHandler(&stream_handler);
+        }
+        if (SUCCEEDED(status)) {
+          status = stream_handler->SetCurrentMediaType(requested_type.Get());
+        }
+      }
+
+      if (SUCCEEDED(status)) {
+        const auto stream_event = announced_ ? MEUpdatedStream : MENewStream;
+        status = events_->QueueEventParamUnk(
+            stream_event, GUID_NULL, S_OK, stream_.Get());
+        if (SUCCEEDED(status)) announced_ = true;
+      }
+      PROPVARIANT start_time;
+      PropVariantInit(&start_time);
+      start_time.vt = VT_I8;
+      start_time.hVal.QuadPart = MFGetSystemTime();
+      if (SUCCEEDED(status)) status = stream_->Start(&start_time);
+      if (SUCCEEDED(status)) {
+        status = events_->QueueEventParamVar(
+            MESourceStarted, GUID_NULL, S_OK, &start_time);
+      }
+      if (SUCCEEDED(status)) {
+        started_ = true;
+        if (mode_ == MediaFoundationVirtualCameraSourceMode::SyntheticPattern) {
+          control_route = copy_string_attribute(
+              source_attributes_.Get(),
+              MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK);
+        }
+      }
+      PropVariantClear(&start_time);
     }
 
-    if (SUCCEEDED(status)) {
-      const auto stream_event = announced_ ? MEUpdatedStream : MENewStream;
-      status = events_->QueueEventParamUnk(
-          stream_event, GUID_NULL, S_OK, stream_.Get());
-      if (SUCCEEDED(status)) announced_ = true;
+    if (!control_route.empty()) {
+      try {
+        std::string ignored_error;
+        (void)control_client_.start(std::move(control_route), ignored_error);
+      } catch (...) {
+        control_client_.stop();
+      }
     }
-    PROPVARIANT start_time;
-    PropVariantInit(&start_time);
-    start_time.vt = VT_I8;
-    start_time.hVal.QuadPart = MFGetSystemTime();
-    if (SUCCEEDED(status)) status = stream_->Start(&start_time);
-    if (SUCCEEDED(status)) {
-      status = events_->QueueEventParamVar(
-          MESourceStarted, GUID_NULL, S_OK, &start_time);
-    }
-    if (SUCCEEDED(status)) started_ = true;
-    PropVariantClear(&start_time);
     return status;
   }
   STDMETHODIMP Stop() override {
-    std::scoped_lock lock(mutex_);
-    if (shutdown_) return MF_E_SHUTDOWN;
-    if (!started_) return MF_E_INVALID_STATE_TRANSITION;
-    HRESULT status = stream_->Stop();
-    if (SUCCEEDED(status)) {
-      status = events_->QueueEventParamVar(MESourceStopped, GUID_NULL, S_OK, nullptr);
+    std::scoped_lock lifecycle_lock(control_lifecycle_mutex_);
+    HRESULT status = S_OK;
+    {
+      std::scoped_lock lock(mutex_);
+      if (shutdown_) return MF_E_SHUTDOWN;
+      if (!started_) return MF_E_INVALID_STATE_TRANSITION;
+      status = stream_->Stop();
+      if (SUCCEEDED(status)) {
+        started_ = false;
+        announced_ = false;
+        status = events_->QueueEventParamVar(
+            MESourceStopped, GUID_NULL, S_OK, nullptr);
+      }
     }
-    if (SUCCEEDED(status)) {
-      started_ = false;
-      announced_ = false;
-    }
+    control_client_.stop();
     return status;
   }
   STDMETHODIMP Pause() override {
@@ -647,16 +696,22 @@ class VirtualCameraMediaSource final : public IMFMediaSourceEx,
     return shutdown_ ? MF_E_SHUTDOWN : MF_E_INVALID_STATE_TRANSITION;
   }
   STDMETHODIMP Shutdown() override {
-    std::scoped_lock lock(mutex_);
-    if (shutdown_) return MF_E_SHUTDOWN;
-    shutdown_ = true;
-    if (stream_) stream_->Shutdown();
-    if (events_) events_->Shutdown();
-    stream_.Reset();
-    descriptor_.Reset();
-    presentation_.Reset();
-    source_attributes_.Reset();
-    events_.Reset();
+    std::scoped_lock lifecycle_lock(control_lifecycle_mutex_);
+    {
+      std::scoped_lock lock(mutex_);
+      if (shutdown_) return MF_E_SHUTDOWN;
+      shutdown_ = true;
+      started_ = false;
+      announced_ = false;
+      if (stream_) stream_->Shutdown();
+      if (events_) events_->Shutdown();
+      stream_.Reset();
+      descriptor_.Reset();
+      presentation_.Reset();
+      source_attributes_.Reset();
+      events_.Reset();
+    }
+    control_client_.stop();
     return S_OK;
   }
   STDMETHODIMP GetSourceAttributes(IMFAttributes** attributes) override {
@@ -752,6 +807,7 @@ class VirtualCameraMediaSource final : public IMFMediaSourceEx,
     if (!shutdown_) Shutdown();
   }
   std::atomic<ULONG> references_{1};
+  std::mutex control_lifecycle_mutex_;
   std::mutex mutex_;
   ComPtr<IMFMediaEventQueue> events_;
   ComPtr<IMFStreamDescriptor> descriptor_;
@@ -760,6 +816,7 @@ class VirtualCameraMediaSource final : public IMFMediaSourceEx,
   ComPtr<IMFAttributes> source_attributes_;
   MediaFoundationVirtualCameraSourceMode mode_{
       MediaFoundationVirtualCameraSourceMode::ExternalSubmit};
+  SourceControlClient control_client_;
   bool announced_{false};
   bool started_{false};
   bool shutdown_{false};

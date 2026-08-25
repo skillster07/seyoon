@@ -87,6 +87,22 @@ Native CTest 타깃은 Release 빌드에서도 `NDEBUG`를 해제하여 assertio
 - Windows Ctrl+C와 portable SIGINT·SIGTERM 처리기는 플래그만 기록하고 엔진 루프가 정상 종료함
 - Frame Server IPC 전에는 텔레메트리가 `frame_transport=unavailable`을 명시함
 
+### Gate W4b-2a — versioned control IPC
+
+통과 기준:
+
+- `VCIP` 1.0 고정 64-byte little-endian header와 안정 메시지 ID golden test 통과
+- 잘못된 magic·major·type·길이·reserved·sequence·trailing bytes를 명확히 거부
+- pipe 이름에 symbolic link 원문을 노출하지 않고 SHA-256 route token만 사용
+- 원격 client를 거부하고 logon SID·LocalService·SYSTEM만 허용하는 보호 DACL 적용
+- server가 `SourceHello` 뒤 peer SID를 확인하고 모든 impersonation 경로에서 복귀
+- source가 Hello 전 server PID·정확한 engine image·일반 사용자 token·session을 확인
+- 엔진 선·후기동, heartbeat stale, 서버 종료·재시작 뒤 자동 재연결 통과
+- pending overlapped I/O를 취소하고 source Stop·Shutdown이 2초 안에 worker를 회수
+- producer 부재·protocol 오류·재연결 중에도 `RequestSample` 테스트 패턴 경로가 비차단 유지
+- frame payload·공유 handle 전송 전 code-signature 또는 per-camera nonce 신원 binding과
+  wrong identity·다른 session·service token negative test 추가
+
 ### Gate W4b — 방송 앱 가상 카메라 수신
 
 통과 기준:
@@ -139,11 +155,12 @@ Error code and full log:
 
 ## 현재 마일스톤
 
-- 2026-08-26 로컬 완료: W1 최선 60 FPS 캡처, W2 GPU surface, W3 1080p60 오프스크린 합성·NV12 변환, W4a COM activation·등록 수명주기, W4b-0 등록 소스 1080p60 테스트 패턴 수신 항목, W4b-1 일반 사용자 엔진 host bounded·Ctrl+C 종료
-- 검증 근거: `docs/validation/WINDOWS_W1_W4A_2026-08-26.md`, `docs/validation/WINDOWS_W4B0_2026-08-26.md`, `docs/validation/WINDOWS_W4B1_ENGINE_HOST_2026-08-26.md`
+- 2026-08-26 로컬 완료: W1 최선 60 FPS 캡처, W2 GPU surface, W3 1080p60 오프스크린 합성·NV12 변환, W4a COM activation·등록 수명주기, W4b-0 등록 소스 1080p60 테스트 패턴 수신 항목, W4b-1 일반 사용자 엔진 host bounded·Ctrl+C 종료, W4b-2a Windows control loopback·재연결
+- 검증 근거: `docs/validation/WINDOWS_W1_W4A_2026-08-26.md`, `docs/validation/WINDOWS_W4B0_2026-08-26.md`, `docs/validation/WINDOWS_W4B1_ENGINE_HOST_2026-08-26.md`, `docs/validation/WINDOWS_W4B2A_CONTROL_IPC_2026-08-26.md`
 - 입력 한계: 현재 캡처보드 입력은 720×480 60 FPS이며 네이티브 1080p60 입력은 별도 검증 필요
-- 현재 핵심 공백: 사용자 세션 엔진과 Frame Server가 활성화한 Media Source 사이 control·프레임 브리지가 없음
+- 현재 핵심 공백: W4b-2a control IPC 구현은 완료됐으나 설치 DLL의 실제 Frame Server LocalService gate와 CPU frame bridge가 남음
 - 로컬 후속: Windows 재부팅 뒤 W4b-0 영구 등록·재수신 확인
-- 클라우드 다음 범위: versioned control·heartbeat → CPU latest-frame IPC → D3D11 공유 텍스처 IPC
+- 클라우드 완료: W4b-2a versioned control codec, 보호된 Windows named pipe, cross-process heartbeat·재연결·bounded shutdown
+- 클라우드 다음 범위: producer 신원 binding → W4b-2b CPU latest-frame IPC → D3D11 공유 텍스처 IPC
 - 로컬 다음 상태: OBS에서 실제 등록 장치의 테스트 패턴 수신 후 SOOP·TikTok LIVE Studio까지 1080p60 W4b 확장
 - 병행 범위: D3D11 이미지·텍스트 렌더러, 데스크톱 UI bridge, 실제 1080p60 입력 및 장치 매트릭스

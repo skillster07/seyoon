@@ -40,6 +40,11 @@ heartbeat, 제한 시간·Ctrl+C 정상 종료 기반을 갖췄습니다. 재부
 실제 1080p60 입력과 producer bridge,
 OBS·SOOP·TikTok LIVE Studio 수신 W4b는 남아 있습니다.
 
+W4b-2a versioned control은 VCIP 1.0 codec, current logon SID·LocalService 보호
+named pipe, cross-process heartbeat와 자동 재연결까지 구현했고 Windows loopback gate를
+통과했습니다. 설치된 Frame Server LocalService와의 실기 연결 및 영상 frame transport는
+다음 검증·구현 범위입니다.
+
 - Windows 카메라 캡처(Media Foundation)
 - Direct3D 기반 GPU 합성
 - Media Foundation 가상 카메라
@@ -119,10 +124,12 @@ OBS·SOOP·TikTok LIVE Studio 수신 W4b는 남아 있습니다.
 ## 다음 구현 백로그
 
 1. Windows 재부팅 후 W4b-0 영구 등록·재수신 확인
-2. 엔진 ↔ Frame Server versioned control·heartbeat와 CPU latest-frame IPC
-3. D3D11 공유 텍스처 IPC와 producer/source 재시작·재연결
-4. OBS → SOOP → TikTok LIVE Studio W4b 호환·재연결 검증
-5. 실제 1080p60 입력과 지원 장치 매트릭스(NVIDIA/AMD/Intel, 캡처 카드, 웹캠)
-6. 4시간 기본 파이프라인 안정성 기준선
-7. 얼굴 추적·세그멘테이션 SDK 자체 개발/라이선스 비교
-8. 웹 프로토타입 사용성 테스트와 이벤트 로깅은 네이티브 트랙과 병행
+2. 설치 DLL의 Frame Server LocalService ↔ 엔진 control·heartbeat 실기 검증
+3. frame transport 전 producer code-signature 또는 per-camera nonce 신원 binding과 negative test
+4. CPU latest-frame IPC와 실제 합성 프레임 전달
+5. D3D11 공유 텍스처 IPC와 producer/source 재시작·재연결
+6. OBS → SOOP → TikTok LIVE Studio W4b 호환·재연결 검증
+7. 실제 1080p60 입력과 지원 장치 매트릭스(NVIDIA/AMD/Intel, 캡처 카드, 웹캠)
+8. 4시간 기본 파이프라인 안정성 기준선
+9. 얼굴 추적·세그멘테이션 SDK 자체 개발/라이선스 비교
+10. 웹 프로토타입 사용성 테스트와 이벤트 로깅은 네이티브 트랙과 병행

@@ -2,6 +2,8 @@
 #include "vividcam/engine_options.hpp"
 
 #ifdef _WIN32
+#include "vividcam/control_channel_transport.hpp"
+
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
@@ -19,6 +21,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -52,6 +55,27 @@ bool should_stop_for_signal() {
 
 std::uint64_t current_process_id() {
   return static_cast<std::uint64_t>(GetCurrentProcessId());
+}
+
+void print_control_status(
+    std::string_view event,
+    const vividcam::ControlChannelTransportSnapshot& status) {
+  std::cout << "[engine-control] schema=" << status.schema_version
+            << " event=" << event
+            << " running=" << (status.running ? "true" : "false")
+            << " connected=" << (status.connected ? "true" : "false")
+            << " connection_attempts=" << status.connection_attempts
+            << " successful_handshakes=" << status.successful_handshakes
+            << " heartbeats_sent=" << status.heartbeats_sent
+            << " heartbeat_acks=" << status.heartbeat_acks
+            << " protocol_errors=" << status.protocol_errors
+            << " rejected_peers=" << status.rejected_peers << std::endl;
+}
+
+void print_control_unavailable(std::string_view reason) {
+  std::cout << "[engine-control] schema="
+            << vividcam::kControlChannelTransportSchemaVersion
+            << " event=unavailable reason=" << reason << std::endl;
 }
 #else
 volatile std::sig_atomic_t stop_signal_received = 0;
@@ -162,6 +186,23 @@ int main(int argc, char** argv) {
   }
   print_status("lifecycle", host.snapshot(running_at));
 
+#ifdef _WIN32
+  vividcam::ProducerControlServer control_server;
+  bool control_server_started = false;
+  std::wstring control_route;
+  std::string control_error;
+  if (!vividcam::find_registered_vividcam_control_route(control_route,
+                                                        control_error)) {
+    print_control_unavailable("route-discovery-failed");
+  } else if (!control_server.start(std::move(control_route), instance_id,
+                                   control_error)) {
+    print_control_unavailable("server-start-failed");
+  } else {
+    control_server_started = true;
+    print_control_status("started", control_server.snapshot());
+  }
+#endif
+
   auto run_deadline = vividcam::EngineHost::TimePoint::max();
   if (options.run_for) run_deadline = running_at + *options.run_for;
   constexpr auto kSignalPollInterval = std::chrono::milliseconds{25};
@@ -199,6 +240,13 @@ int main(int argc, char** argv) {
     wake_at = std::min(wake_at, run_deadline);
     if (wake_at > now) std::this_thread::sleep_until(wake_at);
   }
+
+#ifdef _WIN32
+  if (control_server_started) {
+    control_server.stop();
+    print_control_status("stopped", control_server.snapshot());
+  }
+#endif
 
   if (runtime_failed) {
     const auto failed_at = vividcam::EngineHost::Clock::now();

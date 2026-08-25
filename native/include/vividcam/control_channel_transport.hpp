@@ -1,0 +1,74 @@
+#pragma once
+
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <string_view>
+
+namespace vividcam {
+
+inline constexpr std::uint32_t kControlChannelTransportSchemaVersion = 1;
+
+struct ControlChannelTransportSnapshot {
+  std::uint32_t schema_version{kControlChannelTransportSchemaVersion};
+  bool running{false};
+  bool connected{false};
+  std::uint64_t connection_attempts{0};
+  std::uint64_t successful_handshakes{0};
+  std::uint64_t heartbeats_sent{0};
+  std::uint64_t heartbeat_acks{0};
+  std::uint64_t protocol_errors{0};
+  std::uint64_t rejected_peers{0};
+  std::uint32_t peer_process_id{0};
+  std::string last_error;
+};
+
+// Finds the registered VIVIDCAM camera endpoint without activating a media
+// source. The symbolic link is used only as opaque route input and is never
+// embedded directly in a named-pipe path.
+[[nodiscard]] bool find_registered_vividcam_control_route(
+    std::wstring& route, std::string& error);
+
+// Derives a non-identifying pipe name from the SHA-256 digest of the UTF-16
+// route bytes.
+[[nodiscard]] bool make_vividcam_control_pipe_name(
+    std::wstring_view route, std::wstring& pipe_name, std::string& error);
+
+class ProducerControlServer {
+ public:
+  ProducerControlServer();
+  ~ProducerControlServer();
+  ProducerControlServer(const ProducerControlServer&) = delete;
+  ProducerControlServer& operator=(const ProducerControlServer&) = delete;
+
+  [[nodiscard]] bool start(std::wstring route, std::string engine_instance_id,
+                           std::string& error);
+  void stop() noexcept;
+  [[nodiscard]] ControlChannelTransportSnapshot snapshot() const;
+
+ private:
+  class Impl;
+  std::unique_ptr<Impl> impl_;
+};
+
+class SourceControlClient {
+ public:
+  SourceControlClient();
+  ~SourceControlClient();
+  SourceControlClient(const SourceControlClient&) = delete;
+  SourceControlClient& operator=(const SourceControlClient&) = delete;
+
+  // On Windows the client validates the named-pipe server PID, executable
+  // basename, token principal, and session before sending SourceHello. This is
+  // a defense-in-depth local peer gate, not cryptographic nonce/signature
+  // authentication.
+  [[nodiscard]] bool start(std::wstring route, std::string& error);
+  void stop() noexcept;
+  [[nodiscard]] ControlChannelTransportSnapshot snapshot() const;
+
+ private:
+  class Impl;
+  std::unique_ptr<Impl> impl_;
+};
+
+} // namespace vividcam
