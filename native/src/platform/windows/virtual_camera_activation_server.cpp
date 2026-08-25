@@ -46,7 +46,8 @@ class SourceActivate final : public IMFActivate {
     *object = nullptr;
     std::string error;
     auto source = vividcam::create_media_foundation_virtual_camera_source(
-        vividcam::default_profile(vividcam::Platform::Soop), error);
+        vividcam::default_profile(vividcam::Platform::Soop), error,
+        vividcam::MediaFoundationVirtualCameraSourceMode::SyntheticPattern);
     if (!source.valid()) return E_FAIL;
 
     auto* media_source = reinterpret_cast<IMFMediaSource*>(source.native_pointer);

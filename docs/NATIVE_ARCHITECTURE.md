@@ -52,6 +52,8 @@ latest-frame/backpressure, heartbeat·재연결, producer 부재 시 테스트 �
 - 완료 시각이 다음 프레임 경계를 넘으면 누락 프레임으로 계측합니다.
 - 실시간 방송에서는 오래된 프레임을 누적 처리하지 않고 최신 프레임으로 따라잡습니다.
 - SOOP 기본 프로필은 1920×1080 60p, TikTok 기본 프로필은 1080×1920 60p입니다.
+- W4b-0 테스트 패턴은 sample timestamp·duration의 논리적 60p 계약을 검증합니다. 실제
+  wall-clock pacing과 누락 프레임 계측은 W4b-1 엔진 출력 스케줄러에서 별도 검증합니다.
 
 ## 스레드 모델 초안
 
@@ -94,7 +96,7 @@ latest-frame/backpressure, heartbeat·재연결, producer 부재 시 테스트 �
 19. Windows IMFMediaSource/IMFMediaStream COM 객체, Start/Stop/Shutdown, bounded RequestSample, GPU event 전달 — 구현, 프로세스 내부 검증 통과
 20. MFCreateVirtualCamera 세션/시스템·사용자 접근 등록, Start/Stop/Remove 수명주기 — 구현, Windows W4a 통과
 21. IMFActivate COM class factory DLL, all-users 설치·제거·activation probe — 구현, Windows W4a 통과
-22. W4b-0 영구 등록 소스의 테스트 패턴과 실제 Media Foundation consumer 수신
+22. W4b-0 System+CurrentUser 영구 등록, NV12/BGRA 이동 컬러바, symbolic link 기반 실제 Media Foundation consumer smoke — 구현, 로컬 1920×1080 NV12 60p 수신 통과, 재부팅 지속성 대기
 23. 장시간 `vividcam_engine` 호스트와 producer 상태·heartbeat·텔레메트리
 24. 엔진 사용자 세션 ↔ Frame Server Local Service 사이 versioned IPC latest-frame 브리지
 25. D3D11 공유 텍스처 IPC와 CPU fallback, device-lost·재연결 복구

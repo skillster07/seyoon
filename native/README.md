@@ -26,11 +26,13 @@
 - NV12/BGRA IMFMediaType 목록을 가진 IMFStreamDescriptor, NV12 기본 타입과 선택된 IMFPresentationDescriptor
 - 실제 IMFMediaSource/IMFMediaStream COM 객체, live source 특성, Start/Stop/Shutdown, bounded RequestSample과 GPU MEMediaSample 전달
 - MFCreateVirtualCamera 세션/시스템 수명·현재/전체 사용자 접근, Start/Stop/Remove와 명시적 `--register-test`
+- System+CurrentUser 영구 카메라 설치·제거와 등록 symbolic link 조회
+- 등록 소스 전용 1920×1080 NV12/BGRA 60p 이동 컬러바와 실제 Frame Server consumer smoke gate
 - RGBA 이미지·텍스트 스타일 리소스 저장소와 GPU 결과 비교용 색상/이미지 CPU 참조 합성기
 - 플랫폼 진단 CLI
 - 플랫폼 독립 코어 단위 테스트
 
-현재 Windows 구현은 **1080p60 포맷 협상, 비동기 프레임 수신, D3D11·DXGI surface 전달, 단일 카메라 합성 및 W4a 가상 카메라 등록 단계**입니다. 2026-08-26 로컬에서 W1 최선 60 FPS 입력, W2 GPU surface, W3 1080p60 오프스크린 합성·NV12 변환과 W4a COM activation·등록 수명주기가 통과했습니다. 실제 방송 앱이 활성화한 Frame Server 소스로 프레임을 전달하는 W4b producer bridge는 아직 구현 전입니다.
+현재 Windows 구현은 **1080p60 포맷 협상, 비동기 프레임 수신, D3D11·DXGI surface 전달, 단일 카메라 합성, W4a 등록과 W4b-0 테스트 패턴 단계**입니다. 2026-08-26 로컬에서 W1 최선 60 FPS 입력, W2 GPU surface, W3 1080p60 오프스크린 합성·NV12 변환과 W4a COM activation·등록 수명주기가 통과했습니다. W4b-0 영구 등록 장치도 실제 Frame Server consumer에서 1920×1080 NV12 60p 이동 컬러바 12개를 전달했습니다. 실제 엔진 프레임을 Frame Server 소스로 전달하는 producer bridge는 아직 구현 전입니다.
 
 ## Linux/macOS 공통 코어 검증
 
@@ -58,24 +60,27 @@ ctest --test-dir native/build -C Release --output-on-failure
 ```
 
 검증 스크립트는 `vividcam_virtual_camera_source.dll`의 all-users 설치 상태와 해시를
-확인하고 실제 CLSID activation 및 W4a 등록 수명주기까지 검사합니다. Frame Server가
+확인하고 실제 CLSID activation, W4a 수명주기, W4b-0 영구 등록 장치의 컬러바 수신까지 검사합니다. Frame Server가
 읽을 수 있도록 DLL은 `C:\Program Files\VIVIDCAM\VirtualCamera`에 설치합니다. 수동
 설치와 제거는 관리자 PowerShell에서 다음 명령으로 수행할 수 있습니다.
 
 ```powershell
 .\native\scripts\install-virtual-camera.ps1 -BuildDirectory .\native\build -SkipBuild -AllUsers
-.\native\scripts\uninstall-virtual-camera.ps1 -AllUsers
+.\native\build\Release\vividcam_diagnostics.exe --registered-source-test
+.\native\scripts\uninstall-virtual-camera.ps1 -BuildDirectory .\native\build -AllUsers
 ```
 
 Windows 진단 프로그램은 Media Foundation을 초기화하고 연결된 비디오 캡처 장치, 지원 포맷 및 VIVIDCAM이 선택한 우선 포맷을 출력합니다. `--capture-test`는 첫 번째 카메라를 선택 포맷으로 3초간 비동기 캡처하여 수신·소비·덮어쓴 프레임, GPU/CPU 경로와 오류 수를 보고합니다. `--render-test`는 GPU 프레임을 BGRA 렌더 타깃으로 합성하고 p50/p95/max 지연과 16.67ms W3 게이트를 검사합니다.
 
 `--render-test`의 Media Foundation sample 전달은 진단 프로세스 안에서 생성한 source를
-대상으로 합니다. OBS·SOOP·TikTok LIVE Studio가 여는 Frame Server source로 실제
-프레임을 전달하는지 확인하려면 W4b producer bridge와 별도 호환성 검증이 필요합니다.
+대상으로 합니다. `--registered-source-test`는 영구 카메라의 symbolic link를 통해
+`MFCreateDeviceSource`로 다시 열어 Frame Server가 전달한 12개 NV12 컬러바 샘플을
+검증합니다. OBS·SOOP·TikTok LIVE Studio에 엔진의 실제 합성 프레임을 전달하려면
+W4b producer bridge와 별도 호환성 검증이 계속 필요합니다.
 
 ## 다음 완료 조건
 
-1. 실제 등록된 가상 카메라 소스의 1920×1080 60 FPS 테스트 패턴 수신
+1. Windows 재부팅 후 영구 등록 장치 유지와 W4b-0 재수신
 2. 장시간 실행 엔진 호스트와 Frame Server 사이 latest-frame IPC
 3. 네이티브 1920×1080 60 FPS 입력 소스로 W1~W3 재검증
 4. OBS·SOOP·TikTok LIVE Studio 장치 인식과 실제 영상 수신 W4b

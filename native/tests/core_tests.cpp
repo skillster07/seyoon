@@ -19,6 +19,13 @@
 #include "vividcam/virtual_camera_media_source.hpp"
 #include "vividcam/virtual_camera_media_type.hpp"
 
+#ifdef _WIN32
+#include <Windows.h>
+#include <mfapi.h>
+#include <mfidl.h>
+#include <wrl/client.h>
+#endif
+
 #include <cassert>
 #include <chrono>
 #include <iostream>
@@ -332,6 +339,11 @@ int main() {
   invalid_registration = session_registration;
   invalid_registration.access = VirtualCameraAccess::AllUsers;
   assert(!invalid_registration.valid());
+  auto persistent_registration = session_registration;
+  persistent_registration.lifetime = VirtualCameraLifetime::System;
+  assert(persistent_registration.valid());
+  persistent_registration.access = VirtualCameraAccess::AllUsers;
+  assert(persistent_registration.valid());
 
   std::string conversion_error;
   const std::vector<std::uint8_t> black_bgra(16, 0);
@@ -366,7 +378,56 @@ int main() {
 
   assert(valid_gpu_conversion_output(soop_media_types[0]));
   assert(!valid_gpu_conversion_output(soop_media_types[1]));
-#ifndef _WIN32
+#ifdef _WIN32
+  const HRESULT com_status = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+  const bool owns_com = SUCCEEDED(com_status);
+  assert(owns_com || com_status == RPC_E_CHANGED_MODE);
+  assert(SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_FULL)));
+  {
+    std::string synthetic_error;
+    auto synthetic_source = create_media_foundation_virtual_camera_source(
+        soop, synthetic_error,
+        MediaFoundationVirtualCameraSourceMode::SyntheticPattern);
+    assert(synthetic_source.valid());
+    assert(start_media_foundation_virtual_camera_source(
+        synthetic_source, synthetic_error));
+    const auto started_event = take_media_foundation_virtual_camera_stream_event(
+        synthetic_source, synthetic_error);
+    assert(started_event.valid());
+
+    LONGLONG previous_timestamp = 0;
+    for (int index = 0; index < 3; ++index) {
+      assert(request_media_foundation_virtual_camera_sample(
+          synthetic_source, synthetic_error));
+      const auto sample_event = take_media_foundation_virtual_camera_stream_event(
+          synthetic_source, synthetic_error);
+      assert(sample_event.valid());
+      auto* event = reinterpret_cast<IMFMediaEvent*>(sample_event.native_pointer);
+      MediaEventType event_type = MEUnknown;
+      assert(SUCCEEDED(event->GetType(&event_type)) && event_type == MEMediaSample);
+      PROPVARIANT value;
+      PropVariantInit(&value);
+      assert(SUCCEEDED(event->GetValue(&value)) && value.vt == VT_UNKNOWN &&
+             value.punkVal != nullptr);
+      Microsoft::WRL::ComPtr<IMFSample> sample;
+      assert(SUCCEEDED(value.punkVal->QueryInterface(IID_PPV_ARGS(&sample))));
+      PropVariantClear(&value);
+      LONGLONG timestamp = 0;
+      LONGLONG duration = 0;
+      assert(SUCCEEDED(sample->GetSampleTime(&timestamp)));
+      assert(SUCCEEDED(sample->GetSampleDuration(&duration)));
+      assert(duration == 166667);
+      if (index > 0) assert(timestamp - previous_timestamp == duration);
+      previous_timestamp = timestamp;
+    }
+    assert(stop_media_foundation_virtual_camera_source(
+        synthetic_source, synthetic_error));
+    assert(shutdown_media_foundation_virtual_camera_source(
+        synthetic_source, synthetic_error));
+  }
+  MFShutdown();
+  if (owns_com) CoUninitialize();
+#else
   auto gpu_converter = create_gpu_pixel_converter(nullptr);
   std::string gpu_conversion_error;
   assert(!gpu_converter->valid());

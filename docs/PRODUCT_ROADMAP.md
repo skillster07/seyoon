@@ -33,7 +33,9 @@ TikTok LIVE Studio, OBS, SOOP에서 바로 사용할 수 있으며 YYCam Pro보�
 
 **2026-08-26 엔지니어링 기준선:** W1 최선 60 FPS 캡처, W2 GPU surface,
 W3 1080p60 오프스크린 합성·NV12 변환, W4a COM activation·등록 수명주기가
-로컬 Windows에서 통과했습니다. 실제 1080p60 입력과 Frame Server producer bridge,
+로컬 Windows에서 통과했습니다. W4b-0 영구 등록 소스도 실제 Frame Server
+consumer에서 1920×1080 NV12 60p 이동 컬러바 12개와 정확한 logical cadence를
+전달했습니다. 재부팅 지속성, 실제 1080p60 입력과 producer bridge,
 OBS·SOOP·TikTok LIVE Studio 수신 W4b는 남아 있습니다.
 
 - Windows 카메라 캡처(Media Foundation)
@@ -114,11 +116,10 @@ OBS·SOOP·TikTok LIVE Studio 수신 W4b는 남아 있습니다.
 
 ## 다음 구현 백로그
 
-1. 현재 W1~W4a 기준선 커밋·PR과 검증 문서 고정
-2. W4b-0 실제 등록 소스의 1080p60 테스트 패턴 수신
-3. 장시간 엔진 호스트와 Frame Server producer/source IPC
-4. OBS → SOOP → TikTok LIVE Studio W4b 호환·재연결 검증
-5. 실제 1080p60 입력과 지원 장치 매트릭스(NVIDIA/AMD/Intel, 캡처 카드, 웹캠)
-6. 4시간 기본 파이프라인 안정성 기준선
-7. 얼굴 추적·세그멘테이션 SDK 자체 개발/라이선스 비교
-8. 웹 프로토타입 사용성 테스트와 이벤트 로깅은 네이티브 트랙과 병행
+1. Windows 재부팅 후 W4b-0 영구 등록·재수신 확인
+2. 장시간 엔진 호스트와 Frame Server producer/source IPC
+3. OBS → SOOP → TikTok LIVE Studio W4b 호환·재연결 검증
+4. 실제 1080p60 입력과 지원 장치 매트릭스(NVIDIA/AMD/Intel, 캡처 카드, 웹캠)
+5. 4시간 기본 파이프라인 안정성 기준선
+6. 얼굴 추적·세그멘테이션 SDK 자체 개발/라이선스 비교
+7. 웹 프로토타입 사용성 테스트와 이벤트 로깅은 네이티브 트랙과 병행

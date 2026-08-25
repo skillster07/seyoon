@@ -45,6 +45,7 @@ if(WIN32)
     src/platform/windows/media_foundation_adapter.cpp
     src/platform/windows/media_foundation_source.cpp
     src/platform/windows/virtual_camera_registration.cpp
+    src/platform/windows/registered_virtual_camera_smoke.cpp
     src/platform/windows/d3d11_frame_compositor.cpp
   )
   target_link_libraries(vividcam_platform PUBLIC vividcam_core mfplat mf mfreadwrite mfuuid mfsensorgroup ole32 d3d11 dxgi)
@@ -66,6 +67,7 @@ else()
     src/platform/portable/media_foundation_adapter.cpp
     src/platform/portable/media_foundation_source.cpp
     src/platform/portable/virtual_camera_registration.cpp
+    src/platform/portable/registered_virtual_camera_smoke.cpp
     src/platform/portable/frame_compositor.cpp
   )
   target_link_libraries(vividcam_platform PUBLIC vividcam_core)

@@ -69,7 +69,20 @@ Write-Host "[VIVIDCAM] Run W4a virtual camera registration lifecycle" -Foregroun
 & $Diagnostics --register-test
 if ($LASTEXITCODE -ne 0) { throw "Virtual camera registration lifecycle gate failed" }
 
-Write-Host "[VIVIDCAM] Windows W4a registration and COM activation passed" -ForegroundColor Green
+Write-Host "[VIVIDCAM] Install or re-enable the persistent current-user camera" -ForegroundColor Cyan
+& $Diagnostics --install-camera
+if ($LASTEXITCODE -ne 0) {
+    throw "Persistent current-user virtual camera installation gate failed"
+}
+
+Write-Host "[VIVIDCAM] Open the registered device and validate W4b-0 sample delivery" -ForegroundColor Cyan
+& $Diagnostics --registered-source-test
+if ($LASTEXITCODE -ne 0) {
+    throw ("Registered-device sample delivery gate failed. " +
+           "VIVIDCAM must enumerate as a camera and deliver changing 1920x1080 NV12 60p samples.")
+}
+
+Write-Host "[VIVIDCAM] Windows W4a activation and W4b-0 registered-device delivery passed" -ForegroundColor Green
 
 Write-Host "[VIVIDCAM] Run 3-second hardware capture gate" -ForegroundColor Cyan
 & $Diagnostics --capture-test

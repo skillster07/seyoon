@@ -10,6 +10,7 @@
 #include "vividcam/media_foundation_source.hpp"
 #include "vividcam/output_profile.hpp"
 #include "vividcam/pixel_conversion.hpp"
+#include "vividcam/registered_virtual_camera_smoke.hpp"
 #include "vividcam/scene_graph.hpp"
 #include "vividcam/virtual_camera_media_source.hpp"
 #include "vividcam/virtual_camera_media_type.hpp"
@@ -23,6 +24,7 @@
 #include <wrl/client.h>
 #endif
 
+#include <algorithm>
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
@@ -39,6 +41,13 @@ int main(int argc, char** argv) {
                                std::string_view(argv[1]) == "--activation-test";
   const bool registration_test = argc > 1 &&
                                  std::string_view(argv[1]) == "--register-test";
+  const bool registered_source_test = argc > 1 &&
+                                      std::string_view(argv[1]) ==
+                                          "--registered-source-test";
+  const bool install_camera = argc > 1 &&
+                              std::string_view(argv[1]) == "--install-camera";
+  const bool remove_camera = argc > 1 &&
+                             std::string_view(argv[1]) == "--remove-camera";
   const bool capture_test = render_test ||
                             (argc > 1 && std::string_view(argv[1]) == "--capture-test");
   std::cout << "VIVIDCAM native diagnostics\n";
@@ -158,7 +167,7 @@ int main(int argc, char** argv) {
     }
     if (SUCCEEDED(status) &&
         (input_stream_id != stream_id ||
-         allocator_usage != MFSampleAllocatorUsage_DoesNotAllocate)) {
+         allocator_usage != MFSampleAllocatorUsage_UsesCustomAllocator)) {
       status = E_FAIL;
     }
 
@@ -211,7 +220,8 @@ int main(int argc, char** argv) {
 #endif
     int registration_result = 4;
     const VirtualCameraRegistrationConfig config{
-        L"VIVIDCAM Virtual Camera", L"{B3F8E8E4-1C65-4C10-9DB4-AD2B780A6401}",
+        L"VIVIDCAM Registration Lifecycle Test",
+        L"{B3F8E8E4-1C65-4C10-9DB4-AD2B780A6401}",
         VirtualCameraLifetime::Session, VirtualCameraAccess::CurrentUser};
     {
       const auto camera = register_and_start_virtual_camera(config, registration_error);
@@ -223,6 +233,91 @@ int main(int argc, char** argv) {
         std::cout << "[registration] stopped=" << (stopped ? "yes" : "no")
                   << " removed=" << (removed ? "yes" : "no") << '\n';
         registration_result = stopped && removed ? 0 : 4;
+      }
+    }
+#ifdef _WIN32
+    MFShutdown();
+    if (owns_com) CoUninitialize();
+#endif
+    return registration_result;
+  }
+  if (registered_source_test) {
+    const auto result = run_registered_virtual_camera_smoke();
+    if (!result.supported) {
+      std::cout << "[registered-source] unavailable: " << result.error << '\n';
+      return 5;
+    }
+    if (!result.passed) {
+      std::cout << "[registered-source] failed after " << result.samples
+                << " sample(s), empty callbacks=" << result.empty_callbacks
+                << ", flags=0x" << std::hex << std::uppercase
+                << result.source_reader_flags << std::dec << ": "
+                << result.error << '\n';
+      return 5;
+    }
+    std::cout << "[registered-source] samples=" << result.samples
+              << " type=" << result.width << 'x' << result.height << " NV12 "
+              << result.fps_numerator << '/' << result.fps_denominator
+              << "p checksums=" << result.distinct_checksums
+              << " timestamps=" << result.first_timestamp_100ns << ".."
+              << result.last_timestamp_100ns << " delta_avg/min/max="
+              << result.average_timestamp_delta_100ns << '/'
+              << result.minimum_timestamp_delta_100ns << '/'
+              << result.maximum_timestamp_delta_100ns << " durations="
+              << result.minimum_duration_100ns << ".."
+              << result.maximum_duration_100ns << " empty_callbacks="
+              << result.empty_callbacks << " flags=0x" << std::hex
+              << std::uppercase << result.source_reader_flags << std::dec
+              << " [valid]\n";
+    return 0;
+  }
+  if (install_camera || remove_camera) {
+    std::string registration_error;
+#ifdef _WIN32
+    const HRESULT com_status = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const bool owns_com = SUCCEEDED(com_status);
+    if (FAILED(com_status) && com_status != RPC_E_CHANGED_MODE) {
+      std::cout << "[persistent-camera] COM initialization failed\n";
+      return 4;
+    }
+    if (FAILED(MFStartup(MF_VERSION, MFSTARTUP_FULL))) {
+      if (owns_com) CoUninitialize();
+      std::cout << "[persistent-camera] Media Foundation initialization failed\n";
+      return 4;
+    }
+#endif
+    int registration_result = 4;
+    {
+      NativeMediaFoundationHandle camera;
+      if (install_camera) {
+        camera = register_and_start_persistent_virtual_camera(
+            L"VIVIDCAM Virtual Camera",
+            L"{B3F8E8E4-1C65-4C10-9DB4-AD2B780A6401}", registration_error);
+        if (camera.valid()) {
+          const auto symbolic_link =
+              registered_virtual_camera_symbolic_link(camera, registration_error);
+          if (!symbolic_link.empty()) {
+            std::wcout << L"[persistent-camera] installed/started link="
+                       << symbolic_link << L'\n';
+            registration_result = 0;
+          }
+        }
+      } else {
+        const VirtualCameraRegistrationConfig config{
+            L"VIVIDCAM Virtual Camera",
+            L"{B3F8E8E4-1C65-4C10-9DB4-AD2B780A6401}",
+            VirtualCameraLifetime::System, VirtualCameraAccess::CurrentUser};
+        camera = create_virtual_camera_registration(config, registration_error);
+        if (camera.valid() &&
+            remove_registered_virtual_camera(camera, registration_error)) {
+          std::cout << "[persistent-camera] removed\n";
+          registration_result = 0;
+        }
+      }
+      if (registration_result != 0) {
+        std::cout << "[persistent-camera] "
+                  << (install_camera ? "install/start" : "remove")
+                  << " failed: " << registration_error << '\n';
       }
     }
 #ifdef _WIN32
@@ -302,13 +397,18 @@ int main(int argc, char** argv) {
     }
   }
 
-  if (capture_test && cameras.devices.empty()) {
-    std::cout << "[capture] no camera devices are available\n";
+  const auto capture_camera = std::find_if(
+      cameras.devices.begin(), cameras.devices.end(), [](const auto& camera) {
+        return camera.friendly_name.find(L"VIVIDCAM") == std::wstring::npos;
+      });
+
+  if (capture_test && capture_camera == cameras.devices.end()) {
+    std::cout << "[capture] no non-VIVIDCAM input camera is available\n";
     return 2;
   }
 
   if (capture_test) {
-    const auto preferred = select_preferred_format(cameras.devices.front().formats);
+    const auto preferred = select_preferred_format(capture_camera->formats);
     if (!preferred) {
       std::cout << "[capture] first camera has no valid format\n";
       return 2;
@@ -403,7 +503,7 @@ int main(int argc, char** argv) {
     }
     std::string error;
     const CaptureOptions options{gpu.succeeded(), gpu.context};
-    if (!capture->start(cameras.devices.front().symbolic_link, *preferred, options, error)) {
+    if (!capture->start(capture_camera->symbolic_link, *preferred, options, error)) {
       std::cout << "[capture] start failed: " << error << '\n';
       return 2;
     }

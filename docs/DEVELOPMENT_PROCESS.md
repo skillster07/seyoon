@@ -66,6 +66,16 @@ Native CTest 타깃은 Release 빌드에서도 `NDEBUG`를 해제하여 assertio
 - `IMFActivate`와 필수 Media Source/Stream 인터페이스 계약 통과
 - `MFCreateVirtualCamera` 등록·시작·정지·제거 수명주기 통과
 
+### Gate W4b-0 — 영구 등록 소스 테스트 패턴
+
+통과 기준:
+
+- `System + CurrentUser` 카메라가 프로세스 종료·재부팅 이후에도 유지됨
+- 반환된 symbolic link를 `MFCreateDeviceSource`로 열 수 있음
+- 1920×1080 NV12 60p 계약의 서로 다른 테스트 패턴 샘플을 12개 이상 수신
+- timestamp가 단조 증가하고 duration이 60p이며 프레임 내용이 변화함
+- 제거 명령이 PnP 장치와 설정을 먼저 지운 뒤 COM 서버를 제거함
+
 ### Gate W4b — 방송 앱 가상 카메라 수신
 
 통과 기준:
@@ -118,10 +128,11 @@ Error code and full log:
 
 ## 현재 마일스톤
 
-- 2026-08-26 로컬 완료: W1 최선 60 FPS 캡처, W2 GPU surface, W3 1080p60 오프스크린 합성·NV12 변환, W4a COM activation·등록 수명주기
-- 검증 근거: `docs/validation/WINDOWS_W1_W4A_2026-08-26.md`
+- 2026-08-26 로컬 완료: W1 최선 60 FPS 캡처, W2 GPU surface, W3 1080p60 오프스크린 합성·NV12 변환, W4a COM activation·등록 수명주기, W4b-0 등록 소스 1080p60 테스트 패턴 수신
+- 검증 근거: `docs/validation/WINDOWS_W1_W4A_2026-08-26.md`, `docs/validation/WINDOWS_W4B0_2026-08-26.md`
 - 입력 한계: 현재 캡처보드 입력은 720×480 60 FPS이며 네이티브 1080p60 입력은 별도 검증 필요
 - 현재 핵심 공백: 진단 프로세스의 producer와 Frame Server가 활성화한 Media Source 사이 프레임 브리지가 없음
-- 클라우드 다음 범위: W4b-0 실제 등록 소스 테스트 패턴 → 장시간 엔진 호스트 → IPC 프레임 브리지
+- 로컬 후속: Windows 재부팅 뒤 W4b-0 영구 등록·재수신 확인
+- 클라우드 다음 범위: 장시간 엔진 호스트 → CPU latest-frame IPC → D3D11 공유 텍스처 IPC
 - 로컬 다음 상태: OBS에서 실제 등록 장치의 테스트 패턴 수신 후 SOOP·TikTok LIVE Studio까지 1080p60 W4b 확장
 - 병행 범위: D3D11 이미지·텍스트 렌더러, 데스크톱 UI bridge, 실제 1080p60 입력 및 장치 매트릭스
