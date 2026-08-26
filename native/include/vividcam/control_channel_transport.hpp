@@ -28,6 +28,13 @@ struct ControlChannelTransportSnapshot {
   std::string last_error;
 };
 
+enum class CpuFramePublishResult {
+  Published,
+  TransportUnavailable,
+  MailboxChanged,
+  Failed,
+};
+
 // Verifies that a registered VIVIDCAM endpoint has a nonempty symbolic link,
 // then returns the stable, non-secret single-camera source identity above.
 // The canonical route is hashed and is never embedded directly in a pipe path.
@@ -50,10 +57,13 @@ class ProducerControlServer {
                            std::string& error);
   void stop() noexcept;
   [[nodiscard]] ControlChannelTransportSnapshot snapshot() const;
-  // Gated data-plane access: no caller can retain a mailbox past a control
-  // disconnect, and the call fails while no fully negotiated session exists.
-  [[nodiscard]] bool publish_cpu_frame(const CpuNv12Frame& frame,
-                                       std::string& error);
+  // Publishes only when the currently negotiated mailbox still has the name
+  // observed by the caller. The comparison and publish happen while holding
+  // the same control-session lock, so a frame built for an old connection can
+  // never leak into a replacement mailbox.
+  [[nodiscard]] CpuFramePublishResult publish_cpu_frame_for_mailbox(
+      const CpuNv12Frame& frame, std::wstring_view expected_mailbox_name,
+      std::string& error);
   [[nodiscard]] CpuFrameMailboxSnapshot frame_mailbox_snapshot() const;
   [[nodiscard]] std::wstring frame_mailbox_name() const;
 

@@ -36,13 +36,15 @@
 - 1920×1080 NV12 60/1p 고정 두 슬롯 CPU latest-frame `Local\`/`Global\` shared-memory core
 - 단일-writer CAS claim, exact production DACL·Medium/no-write-up label과 덮어쓰기·torn·invalid 계측
 - 인증된 control session의 stream 협상, connection별 mailbox 생성·open·stale·재연결·종료 수명주기
+- 비압축 physical GPU capture → compositor → NV12 readback과 generation-bound CPU mailbox publisher
+- 비차단 60p frame worker, 5초 degraded recovery, rational pacing·drop·latency telemetry
 - RGBA 이미지·텍스트 스타일 리소스 저장소와 GPU 결과 비교용 색상/이미지 CPU 참조 합성기
 - 플랫폼 진단 CLI
 - 플랫폼 독립 코어 단위 테스트
 
 현재 Windows 구현은 **1080p60 포맷 협상, 비동기 프레임 수신, D3D11·DXGI surface 전달,
 단일 카메라 합성, W4a 등록, W4b-0 테스트 패턴, W4b-1 엔진 호스트, W4b-2a control
-IPC·producer identity binding과 W4b-2b CPU transport core 단계**입니다. 2026-08-26
+IPC·producer identity binding, W4b-2b CPU transport와 W4b-2c engine publisher 단계**입니다. 2026-08-26
 로컬에서 W1 최선 60 FPS 입력, W2 GPU surface, W3 1080p60 오프스크린 합성·NV12 변환과
 W4a COM activation·등록 수명주기가 통과했습니다. W4b-0 영구 등록 장치도 실제 Frame
 Server consumer에서 1920×1080 NV12 60p 이동 컬러바 12개를 전달했습니다. W4b-1 엔진은
@@ -63,10 +65,14 @@ writer로 연 뒤에만 handshake 성공을 기록하며, stale 시 gated source
 검증된 heartbeat가 돌아오면 복구합니다. 이번 변경은 Windows CTest 10/10, control transport 5/5,
 mailbox 3/3과 3,110,400-byte NV12 결정적 roundtrip·wrong-order 거부를 통과했습니다.
 
-engine render/readback publisher와 MF `RequestSample` consumer/fallback은 아직 연결하지
-않았습니다. 따라서 현재 등록 카메라 출력은 계속 컬러바 fallback이며, 설치된 실제 Frame
-Server의 `Global\` cross-session mapping과 W4b-2b 전체 gate, W4b-0 재부팅 지속성은 남아
-있습니다.
+W4b-2c engine publisher는 비압축 physical GPU 입력을 합성·NV12 변환·CPU readback한 뒤
+connection generation에 묶어 mailbox에 60p로 게시합니다. 카메라/GPU 작업은 별도 worker에
+격리하고 degraded pipeline은 5초 backoff로 다시 시작합니다. Windows Release CTest 13/13,
+publisher·worker·control transport 각 5회 반복이 통과했습니다.
+
+MF `RequestSample` consumer/fallback은 아직 연결하지 않았습니다. 따라서 현재 등록 카메라
+출력은 계속 컬러바 fallback이며, 설치된 실제 Frame Server의 `Global\` publisher gate와
+W4b-0 재부팅 지속성은 남아 있습니다.
 
 ## Linux/macOS 공통 코어 검증
 
@@ -171,14 +177,17 @@ console 계정의 **일반 사용자 PowerShell 두 개**에서 확인합니다.
 
 ```powershell
 $diag = Join-Path $env:ProgramFiles "VIVIDCAM\VirtualCamera\vividcam_diagnostics.exe"
-& $diag --registered-source-test
+& $diag --registered-source-hold-test
 ```
 
-통과 기준은 `[registered-source] ... samples=12 ... [valid]`,
-`successful_handshakes >= 1`, `heartbeats_sent == heartbeat_acks`,
-`protocol_errors=0`, `rejected_peers=0`입니다. 12-frame 진단이 첫 500ms heartbeat 전에
-끝나면 heartbeat `0/0`도 정상입니다. 이 로컬 `Global\` gate는 아직 실행 결과를 받지
-않았으므로 자동 검증 통과와 구분해 대기로 기록합니다.
+이 명령은 실제 Frame Server session을 약 10초 유지하고 현재 source 출력인 컬러바 600개를
+검증해 `[registered-source-hold] samples=600 ... [valid]`를 출력합니다. 이 결과만으로
+publisher를 증명하지는 않습니다. 동시에 engine 로그가
+`[engine-frame] state=ready mailbox=ready ... published=<1 이상>`을 기록해야 합니다.
+`successful_handshakes >= 1`, `heartbeats_sent == heartbeat_acks`, `protocol_errors=0`,
+`rejected_peers=0`도 요구합니다. 짧은 설치 smoke에는 기존 `--registered-source-test`를
+계속 사용합니다. 새 publisher `Global\` gate는 아직 실행 결과를 받지 않았으므로 자동
+검증 통과와 구분해 대기로 기록합니다.
 
 canonical production route는 SYSTEM과 `NT SERVICE\FrameServer` SID만 pipe에
 접속시킵니다. 따라서 예전에 사용한 일반 사용자 진단 명령은 더 이상 production 성공
@@ -232,19 +241,23 @@ synchronized frame과 consumer 대기 없는 140개 burst를 게시해 정확한
 overwrite 발생과 torn/invalid 0을 검증했습니다. 자세한 결과는
 `docs/validation/WINDOWS_W4B2B_CPU_FRAME_TRANSPORT_2026-08-26.md`에 기록합니다.
 
-control worker는 source에서 connection별 mailbox를 만들고 engine에서 같은 이름을 열며,
-현재 session에 묶인 publish/take API만 외부에 제공합니다. raw mailbox handle은 노출하지
-않습니다. disconnect·reconnect·stop에서 양쪽 handle을 닫고 reconnect는 새 connection ID와
-새 이름을 사용합니다. source heartbeat가 stale이면 consumer read 경로를 일시 중단하고
-producer identity를 다시 검증한
-heartbeat 뒤 복구합니다.
+control worker는 source에서 connection별 mailbox를 만들고 engine에서 같은 이름을 엽니다.
+raw mailbox handle은 노출하지 않습니다. engine publish는 caller가 관측한 object name과 현재
+name을 같은 control lock 아래 비교한 뒤 수행하므로 reconnect 중 이전 frame이 새 mapping에
+들어가지 않습니다. disconnect·reconnect·stop에서 양쪽 handle을 닫고 reconnect는 새
+connection ID·새 이름을 사용합니다. source heartbeat가 stale이면 consumer read 경로를
+일시 중단하고 producer identity를 다시 검증한 heartbeat 뒤 복구합니다.
 
-그러나 engine renderer는 아직 `publish_cpu_frame`으로 frame을 게시하지 않고 Media
-Foundation stream도 `take_latest_cpu_frame`에서 frame을 consume하지 않습니다. 따라서
-`frame_transport=ready` 상태에서도 등록 카메라가 기존 컬러바를 반환하는 것이 정상입니다.
-자동 검증은 control·mailbox lifecycle을 증명하지만 실제 Frame Server `Global\`
-cross-session open이나 합성 영상 수신을 대신하지 않습니다. 상세 결과는
-`docs/validation/WINDOWS_W4B2B_CONTROL_MAILBOX_LIFECYCLE_2026-08-26.md`에 기록합니다.
+engine frame worker는 mailbox가 열릴 때만 physical camera pipeline을 비차단 활성화합니다.
+NV12·YUY2·BGRA native GPU 포맷이 있는 첫 usable camera를 선택하고, 1920×1080 compositor와
+NV12 converter, reusable staging readback을 60p로 실행합니다. main publisher는 최신 CPU
+frame을 swap으로 받아 logical sequence/timestamp를 지정하고 backlog를 쌓지 않습니다.
+
+Media Foundation stream은 아직 mailbox의 `take_latest_cpu_frame`을 sample로 반환하지
+않습니다. 따라서 `frame_transport=ready` 및 `[engine-frame] published>0`이어도 등록 카메라가
+기존 컬러바를 반환하는 것이 정상입니다. 실제 Frame Server `Global\` publisher와 합성 영상
+수신은 별도 로컬 gate입니다. 상세 자동 결과는
+`docs/validation/WINDOWS_W4B2C_ENGINE_FRAME_PUBLISHER_2026-08-26.md`에 기록합니다.
 
 현재 신뢰 경계는 Program Files와 HKLM을 변경할 수 있는 관리자까지 포함합니다. 같은 사용자
 권한의 runtime code injection·process hollowing은 범위 밖이고, 예측 가능한 canonical pipe를
@@ -257,8 +270,8 @@ RDP·복수 동시 세션은 후속 범위입니다. 배포 서명 이후 Authen
 1. Windows 재부팅 후 영구 등록 장치 유지와 W4b-0 재수신
 2. active console 계정으로 새 producer identity manifest를 elevated 설치한 실제 Frame Server handshake·heartbeat 확인 — 완료
 3. CPU latest-frame IPC — codec·mailbox·control lifecycle 자동 검증 완료; engine
-   render/readback publisher, MF consumer/fallback과 실제 합성 프레임 전달 진행 예정
-4. 설치된 Frame Server의 `Global\` mapping과 producer/source 재시작·재연결 로컬 검증
+   render/readback publisher 자동 검증 완료; MF consumer/fallback과 실제 합성 프레임 전달 예정
+4. 설치된 Frame Server의 `Global\` publisher와 producer/source 재시작·재연결 로컬 검증
 5. D3D11 공유 텍스처 IPC와 CPU fallback
 6. 네이티브 1920×1080 60 FPS 입력 소스로 W1~W3 재검증
 7. OBS·SOOP·TikTok LIVE Studio 장치 인식과 실제 영상 수신 W4b

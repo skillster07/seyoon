@@ -13,6 +13,8 @@ endif()
 add_library(vividcam_core
   src/control_channel_state.cpp
   src/cpu_frame_transport.cpp
+  src/engine_frame_publisher.cpp
+  src/engine_frame_worker.cpp
   src/engine_host.cpp
   src/engine_options.cpp
   src/output_profile.cpp
@@ -22,6 +24,7 @@ add_library(vividcam_core
   src/camera_formats.cpp
   src/gpu_context.cpp
   src/gpu_pixel_converter.cpp
+  src/gpu_nv12_readback.cpp
   src/latency_tracker.cpp
   src/layer_resources.cpp
   src/frame_compositor.cpp
@@ -50,6 +53,8 @@ if(WIN32)
     src/platform/windows/media_foundation_capture.cpp
     src/platform/windows/d3d11_gpu_context.cpp
     src/platform/windows/d3d11_gpu_pixel_converter.cpp
+    src/platform/windows/d3d11_gpu_nv12_readback.cpp
+    src/platform/windows/engine_frame_pipeline.cpp
     src/platform/windows/media_foundation_adapter.cpp
     src/platform/windows/media_foundation_source.cpp
     src/platform/windows/virtual_camera_registration.cpp
@@ -75,6 +80,8 @@ else()
     src/platform/portable/camera_capture.cpp
     src/platform/portable/gpu_context.cpp
     src/platform/portable/gpu_pixel_converter.cpp
+    src/platform/portable/gpu_nv12_readback.cpp
+    src/platform/portable/engine_frame_pipeline.cpp
     src/platform/portable/media_foundation_adapter.cpp
     src/platform/portable/media_foundation_source.cpp
     src/platform/portable/virtual_camera_registration.cpp
@@ -116,6 +123,36 @@ if(VIVIDCAM_BUILD_TESTS)
                                                            -UNDEBUG)
   endif()
   add_test(NAME vividcam_engine_tests COMMAND vividcam_engine_tests)
+
+  add_executable(vividcam_engine_frame_publisher_tests
+    tests/engine_frame_publisher_tests.cpp)
+  target_link_libraries(vividcam_engine_frame_publisher_tests PRIVATE
+    vividcam_core)
+  if(MSVC)
+    target_compile_options(vividcam_engine_frame_publisher_tests PRIVATE
+      /W4 /permissive- /UNDEBUG)
+  else()
+    target_compile_options(vividcam_engine_frame_publisher_tests PRIVATE
+      -Wall -Wextra -Wpedantic -Werror -UNDEBUG)
+  endif()
+  add_test(NAME vividcam_engine_frame_publisher_tests
+    COMMAND vividcam_engine_frame_publisher_tests)
+
+  add_executable(vividcam_engine_frame_worker_tests
+    tests/engine_frame_worker_tests.cpp)
+  target_link_libraries(vividcam_engine_frame_worker_tests PRIVATE
+    vividcam_core vividcam_platform)
+  if(MSVC)
+    target_compile_options(vividcam_engine_frame_worker_tests PRIVATE
+      /W4 /permissive- /UNDEBUG)
+  else()
+    target_compile_options(vividcam_engine_frame_worker_tests PRIVATE
+      -Wall -Wextra -Wpedantic -Werror -UNDEBUG)
+  endif()
+  add_test(NAME vividcam_engine_frame_worker_tests
+    COMMAND vividcam_engine_frame_worker_tests)
+  set_tests_properties(vividcam_engine_frame_worker_tests PROPERTIES
+    TIMEOUT 10)
 
   add_executable(vividcam_control_channel_state_tests
     tests/control_channel_state_tests.cpp)
@@ -171,6 +208,22 @@ if(VIVIDCAM_BUILD_TESTS)
   add_test(NAME vividcam_cpu_frame_transport_tests
     COMMAND vividcam_cpu_frame_transport_tests)
   set_tests_properties(vividcam_cpu_frame_transport_tests PROPERTIES
+    TIMEOUT 20)
+
+  add_executable(vividcam_gpu_nv12_readback_tests
+    tests/gpu_nv12_readback_tests.cpp)
+  target_link_libraries(vividcam_gpu_nv12_readback_tests PRIVATE
+    vividcam_core vividcam_platform)
+  if(MSVC)
+    target_compile_options(vividcam_gpu_nv12_readback_tests PRIVATE
+      /W4 /permissive- /UNDEBUG)
+  else()
+    target_compile_options(vividcam_gpu_nv12_readback_tests PRIVATE
+      -Wall -Wextra -Wpedantic -Werror -UNDEBUG)
+  endif()
+  add_test(NAME vividcam_gpu_nv12_readback_tests
+    COMMAND vividcam_gpu_nv12_readback_tests)
+  set_tests_properties(vividcam_gpu_nv12_readback_tests PROPERTIES
     TIMEOUT 20)
 
   if(WIN32)

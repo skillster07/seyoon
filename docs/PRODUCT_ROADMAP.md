@@ -82,10 +82,18 @@ mailbox를 닫고 reconnect마다 새 connection ID·새 object name을 사용�
 10/10, control transport 5/5, mailbox 3/3, 결정적 3,110,400-byte NV12 roundtrip과
 wrong-order 거부가 통과했습니다.
 
-negotiated mailbox가 있으면 engine은 `frame_transport=ready`를 표시합니다. 그러나 engine
-render/readback publisher와 MF `RequestSample` consumer/fallback은 아직 연결하지 않아 등록
-카메라는 계속 컬러바를 반환합니다. 설치된 실제 Frame Server의 `Global\` cross-session
-mapping과 방송 앱 수신도 아직 검증하지 않았으므로 Gate W4b-2b는 진행 중입니다.
+W4b-2c에서는 물리 카메라의 비압축 GPU 입력을 SOOP 1920×1080 장면으로 합성하고 NV12로
+변환한 뒤 D3D11 staging readback을 통해 negotiated mailbox에 게시하는 engine publisher를
+연결했습니다. 카메라·GPU 호출은 별도 60p worker에 격리하여 control heartbeat와 엔진
+종료 루프를 막지 않으며, degraded 상태는 5초 backoff로 다시 시작합니다. publisher는
+rational 60p timestamp, backlog drop, 반복 입력과 실패를 계측합니다. reconnect마다 mailbox
+이름을 generation으로 사용하고 이름 비교와 publish를 같은 잠금 아래 수행하므로 이전
+연결용 frame이 새 mapping에 들어가지 않습니다. Windows Release CTest 13/13과 worker·
+publisher·control 각 5회 반복이 통과했습니다.
+
+MF `RequestSample` consumer/fallback은 아직 연결하지 않아 등록 카메라는 계속 컬러바를
+반환합니다. 설치된 실제 Frame Server의 `Global\` mapping에 실제 engine frame이 게시되는
+로컬 gate와 방송 앱 수신도 아직 검증하지 않았으므로 Gate W4b는 진행 중입니다.
 
 기존 VCIP 1.0 header·version과 prior message 계약은 유지하고 frame bytes 대신 compact
 negotiation payload만 추가했습니다. unsigned 개발 빌드에는 설치 경로·SHA-256 pin을
@@ -177,7 +185,8 @@ restricted broker/package 경계를 추가합니다. 현재 Program Files·HKLM 
 2. active console 계정으로 새 producer identity manifest를 elevated 설치한 실제 FrameServer handshake·heartbeat 확인 — 완료
 3. 설치된 Frame Server의 `Global\` CPU mapping, producer/source 재시작·재연결 검증
 4. CPU latest-frame IPC — codec·mailbox·authenticated control lifecycle 자동 검증 완료;
-   engine render/readback CPU NV12 publisher·60p pacing 진행 예정
+   engine render/readback CPU NV12 publisher·60p worker/pacing 자동 검증 완료, 설치 runtime
+   publisher 로컬 gate 대기
 5. MF `RequestSample` latest-frame consumer와 부재·torn·stale 컬러바/마지막-frame fallback
 6. D3D11 공유 텍스처 IPC와 CPU fallback
 7. Authenticode signer SPKI pin과 producer 격리 경계 보강
