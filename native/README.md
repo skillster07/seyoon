@@ -36,7 +36,7 @@
 - 플랫폼 진단 CLI
 - 플랫폼 독립 코어 단위 테스트
 
-현재 Windows 구현은 **1080p60 포맷 협상, 비동기 프레임 수신, D3D11·DXGI surface 전달, 단일 카메라 합성, W4a 등록, W4b-0 테스트 패턴, W4b-1 엔진 호스트와 W4b-2a control IPC·producer identity binding 단계**입니다. 2026-08-26 로컬에서 W1 최선 60 FPS 입력, W2 GPU surface, W3 1080p60 오프스크린 합성·NV12 변환과 W4a COM activation·등록 수명주기가 통과했습니다. W4b-0 영구 등록 장치도 실제 Frame Server consumer에서 1920×1080 NV12 60p 이동 컬러바 12개를 전달했습니다. W4b-1 엔진은 일반 사용자 권한에서 생명주기, heartbeat, 제한 시간과 Ctrl+C 종료가 통과했습니다. 기본 W4b-2a는 Windows loopback과 설치 DLL의 실제 Frame Server LocalService handshake 1회·heartbeat ACK 69/69를 오류 없이 통과했습니다. 그 뒤 추가한 producer identity binding은 Windows Release 빌드, **Windows CTest 9/9**, control transport 5회 반복 및 Web production build를 통과했습니다. Windows 전용 helper tests는 첫 설치의 레지스트리 계층 생성·롤백, PowerShell 5.1 ACL·Registry64 쓰기 호환성과 함께, 실제 서비스를 건드리지 않고 persistent camera stop/re-enable 및 FrameServer-only update 정책을 검증합니다. elevated `validate-windows.ps1` package 판정·필요 시 자동 repair와 새 manifest의 실제 Frame Server 통합 게이트는 아직 대기입니다. 다음 구현은 CPU latest-frame producer bridge이며 W4b-0 재부팅 지속성도 아직 남아 있습니다.
+현재 Windows 구현은 **1080p60 포맷 협상, 비동기 프레임 수신, D3D11·DXGI surface 전달, 단일 카메라 합성, W4a 등록, W4b-0 테스트 패턴, W4b-1 엔진 호스트와 W4b-2a control IPC·producer identity binding 단계**입니다. 2026-08-26 로컬에서 W1 최선 60 FPS 입력, W2 GPU surface, W3 1080p60 오프스크린 합성·NV12 변환과 W4a COM activation·등록 수명주기가 통과했습니다. W4b-0 영구 등록 장치도 실제 Frame Server consumer에서 1920×1080 NV12 60p 이동 컬러바 12개를 전달했습니다. W4b-1 엔진은 일반 사용자 권한에서 생명주기, heartbeat, 제한 시간과 Ctrl+C 종료가 통과했습니다. 기본 W4b-2a는 Windows loopback과 설치 DLL의 실제 Frame Server LocalService handshake 1회·heartbeat ACK 69/69를 오류 없이 통과했습니다. 그 뒤 추가한 producer identity binding은 Windows Release 빌드, **Windows CTest 9/9**, control transport 5회 반복 및 Web production build를 통과했습니다. Windows 전용 helper tests는 첫 설치의 레지스트리 계층 생성·롤백, PowerShell 5.1 ACL·Registry64 쓰기 호환성과 함께, 실제 서비스를 건드리지 않고 persistent camera stop/re-enable 및 FrameServer-only update 정책을 검증합니다. elevated `validate-windows.ps1`가 generation 1 package 설치·재검증과 등록 source 1920×1080 NV12 60p 샘플 12개 수신을 통과했고, 설치된 일반 사용자 엔진과 실제 Frame Server도 handshake 1회·heartbeat ACK 147/147을 protocol error·rejected peer 없이 통과했습니다. 다음 구현은 CPU latest-frame producer bridge이며 W4b-0 재부팅 지속성도 아직 남아 있습니다.
 
 ## Linux/macOS 공통 코어 검증
 
@@ -153,7 +153,8 @@ pipe가 없다는 결과는 성공이 아닙니다. 일반 사용자 진단 clie
 production DACL의 negative gate입니다.
 새 production 성공 검증은 관리자 재설치 뒤 설치된 엔진을 일반 사용자로 실행하고,
 등록 카메라를 열어 실제 Frame Server가 handshake·heartbeat를 수행하는 방식으로
-진행합니다. 현재 그 새 설치 통합 결과는 대기 중이며
+진행합니다. 2026-08-26 새 generation 1 설치에서 handshake 1회·heartbeat ACK 147/147,
+protocol error 0, rejected peer 0으로 통과했으며
 `docs/validation/WINDOWS_W4B2A_PRODUCER_IDENTITY_2026-08-26.md`에 상태를 기록합니다.
 테스트용 비canonical route는 loopback CTest를 위해 기존 current-user 정책을 유지합니다.
 
@@ -173,7 +174,7 @@ RDP·복수 동시 세션은 후속 범위입니다. 배포 서명 이후 Authen
 ## 다음 완료 조건
 
 1. Windows 재부팅 후 영구 등록 장치 유지와 W4b-0 재수신
-2. active console 계정으로 새 producer identity manifest를 elevated 설치한 실제 Frame Server handshake·heartbeat 확인
+2. active console 계정으로 새 producer identity manifest를 elevated 설치한 실제 Frame Server handshake·heartbeat 확인 — 완료
 3. CPU latest-frame IPC와 실제 합성 프레임 전달
 4. D3D11 공유 텍스처 IPC와 CPU fallback
 5. 네이티브 1920×1080 60 FPS 입력 소스로 W1~W3 재검증

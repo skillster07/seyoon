@@ -3,25 +3,24 @@
 ## 결과 요약
 
 W4b-2a control channel에 installer-pinned producer identity gate를 구현했습니다. Windows
-Release 빌드, CTest 7/7, control transport 5회 반복과 Web production build는
+Release 빌드, CTest 9/9, control transport 5회 반복과 Web production build는
 통과했습니다. 이 결과에는 installer user SID가 포함된 manifest 구조, 파일 SHA-256,
 regular non-reparse 설치 sibling 경로와 mismatch 거부를 직접 검사하는
 `vividcam_producer_identity_tests`가 포함됩니다.
 
-새 identity manifest를 관리자 권한으로 실제 설치한 뒤 설치 엔진과 Windows FrameServer를
-연결하는 로컬 통합 항목은 아직 실행하지 않았습니다. 따라서 이 보고서는 구현·자동 검증
-통과를 기록하며, 새 설치 환경의 FrameServer handshake·heartbeat를 통과했다고 주장하지
-않습니다.
+새 identity manifest의 관리자 설치·재검증과 설치 엔진 ↔ Windows FrameServer 로컬 통합도
+통과했습니다. generation 1 설치 뒤 실제 source가 handshake 1회와 heartbeat ACK 147/147을
+protocol error·rejected peer 없이 완료했습니다.
 
 | 항목 | 상태 |
 | --- | --- |
 | Windows Release 전체 빌드 | 통과 |
-| Windows CTest | 통과, 7/7 |
+| Windows CTest | 통과, 9/9 |
 | control transport 반복 | 통과, 5/5 |
 | direct manifest/hash/path verifier | 통과 |
 | Web production build | 통과 |
-| elevated `validate-windows.ps1` package current/repair 재검증 | 구현, 실제 관리자 실행 대기 |
-| 새 manifest 설치 후 실제 FrameServer integration | 대기, elevated validation/repair와 사용자 통합 확인 필요 |
+| elevated `validate-windows.ps1` package current/repair 재검증 | 통과, generation 1 |
+| 새 manifest 설치 후 실제 FrameServer integration | 통과, handshake 1회·heartbeat ACK 147/147 |
 
 ## 신원 기준
 
@@ -148,7 +147,7 @@ HMAC을 추가하지 않았습니다. 기존 heartbeat·stale·재연결·bounde
 
 ## 자동 검증 결과
 
-Windows Release 전체 CTest 7개가 통과했습니다. 새 direct identity test는 다음 positive와
+Windows Release 전체 CTest 9개가 통과했습니다. 새 direct identity test는 다음 positive와
 negative 경로를 실행했습니다.
 
 - 현재 test executable의 SHA-256 계산 성공
@@ -194,7 +193,7 @@ package를 repair/reinstall하고 위 다섯 조건을 다시 전부 검사합�
 engine을 실행해 실제 FrameServer와 handshake·heartbeat했다는 뜻은 아닙니다. 그 통합
 항목은 아래 절차로 별도 확인합니다.
 
-## 남은 로컬 통합 gate
+## 로컬 통합 gate와 결과
 
 먼저 카메라를 사용하는 앱을 닫습니다. 설치 상태가 current인지 확실하지 않다면 실행 중인
 VIVIDCAM engine도 종료합니다. engine을 실행할 현재 active console 사용자와 같은 Windows
@@ -240,8 +239,24 @@ engine pipe가 열린 뒤 별도 일반 사용자 PowerShell에서 production DA
 OBS에서 열어 실제 FrameServer source를 활성화합니다. 통과 기준은 설치된 engine의
 `successful_handshakes`와 `heartbeat_acks`가 지속 증가하고 protocol 오류나 rejected
 production peer가 없으며, consumer가 계속 샘플을 받는 것입니다. heartbeat마다 전체
-identity/path/hash 재검증이 실행되므로 여러 ACK가 연속 증가해야 합니다. 새 설치 통합
-gate가 통과한 뒤 이 보고서에 실제 환경과 handshake·heartbeat 수치를 추가합니다.
+identity/path/hash 재검증이 실행되므로 여러 ACK가 연속 증가해야 합니다. 아래에 실제 환경과
+통과한 handshake·heartbeat 수치를 기록합니다.
+
+2026-08-26 같은 active console 계정의 관리자 PowerShell에서 전체 검증을 다시 실행해
+generation 1 producer identity package 설치와 재검증을 완료했습니다. Windows CTest 9/9,
+IMFActivate contract, W4a 등록 수명주기와 등록 source의 1920x1080 NV12 60p 샘플 12개
+수신이 모두 통과했습니다. 실제 카메라 입력·D3D11 합성 gate도 errors, rejected frames와
+virtual-camera underrun 없이 완료됐습니다.
+
+이어 같은 계정의 일반 사용자 PowerShell에서 설치된 engine을 실행하고 등록 카메라를 열어
+실제 Frame Server source를 활성화했습니다. 종료 시 engine control 수치는 다음과 같습니다.
+
+```text
+[engine-control] schema=1 event=stopped running=false connected=false connection_attempts=1 successful_handshakes=1 heartbeats_sent=147 heartbeat_acks=147 protocol_errors=0 rejected_peers=0
+```
+
+따라서 새 manifest에 결합된 production handshake와 heartbeat별 identity/path/hash 재검증,
+정상 ACK와 종료 gate를 **통과**로 판정합니다.
 
 ## 한계와 후속 보강
 
@@ -257,8 +272,8 @@ redirect와 설치 후 디스크 파일 교체를 막습니다. 남은 경계는
 - `WTSGetActiveConsoleSessionId` 기준의 물리적 active console user 한 명만 지원합니다.
   RDP-only, fast user switching과 복수 동시 session은 후속 broker·registration 설계로
   미룹니다.
-- 새 elevated install과 실제 FrameServer handshake·heartbeat 성공은 여전히 로컬 검증
-  대기이며 이번 자동 결과로 대체되지 않습니다.
+- 새 elevated generation 1 install과 실제 FrameServer handshake·heartbeat는 2026-08-26
+  로컬 통합 gate에서 통과했습니다.
 
 배포 서명 이후 Authenticode `WinVerifyTrust`와 허용 signer의 SPKI pin을 추가하고, 위협
 모델이 요구하면 restricted broker/package 또는 별도 제한 SID 경계를 도입합니다.

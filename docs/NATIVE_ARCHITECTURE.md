@@ -32,7 +32,7 @@ Media Foundation Capture
 | MF Adapter | 타입·샘플·이벤트·descriptor | IMFMediaType, GPU IMFSample, event queue, stream/presentation descriptor와 기본 NV12 선택 구현 |
 | Pixel Conversion | 합성 BGRA를 소비자 포맷으로 변환 | CPU 기준 변환과 D3D11 Video Processor NV12 zero-copy·출력 풀 구현, Windows GPU 변환 통과 |
 | Engine Host | 사용자 세션 장기 실행·상태 보고 | `Program Files`에 설치되는 별도 `vividcam_engine`, 생명주기·heartbeat·정상 종료와 bounded smoke 구현 |
-| Control IPC | Engine ↔ Frame Server 제어·상태 | VCIP 1.0 codec, FrameServer service SID 전용 pipe, 설치 사용자 SID·active console·token·경로·SHA-256 identity binding과 heartbeat 재검증 구현; 자동 검증 통과, 새 설치 DLL 통합 gate 대기 |
+| Control IPC | Engine ↔ Frame Server 제어·상태 | VCIP 1.0 codec, FrameServer service SID 전용 pipe, 설치 사용자 SID·active console·token·경로·SHA-256 identity binding과 heartbeat 재검증 구현; 자동 검증과 새 설치 DLL 통합 gate 통과 |
 | Bridge | 데스크톱 UI와 네이티브 명령·상태 연결 | 예정 |
 
 ## 프로세스 경계
@@ -45,10 +45,11 @@ Media Source를 만들고 같은 프로세스에서 샘플을 직접 전달합�
 
 W4b-2a에서는 사용자 세션의 엔진과 Frame Server source 사이 versioned control IPC,
 heartbeat·재연결, producer 부재 시 테스트 패턴 fallback과 producer identity binding을
-구현했습니다. identity 변경분은 Windows Release 빌드, CTest 7/7, control transport 5회
-반복과 Web 검증을 통과했습니다. 다만 elevated `validate-windows.ps1` package 판정·필요 시
-자동 repair와 새 manifest를 사용한 실제 Frame Server 통합 gate는 확인 대기입니다. 다음
-W4b-2b에서는 같은 수명주기 경계에 CPU
+구현했습니다. identity 변경분은 Windows Release 빌드, CTest 9/9, control transport 5회
+반복과 Web 검증을 통과했습니다. elevated `validate-windows.ps1`가 generation 1 package를
+설치·재검증한 뒤 등록 source의 1920x1080 NV12 60p 샘플 12개를 수신했고, 설치된 일반 사용자
+engine과 실제 Frame Server가 handshake 1회와 heartbeat ACK 147/147을 protocol error와
+rejected peer 없이 통과했습니다. 다음 W4b-2b에서는 같은 수명주기 경계에 CPU
 latest-frame/backpressure 전송을 연결합니다.
 
 W4b-1의 `schema=1` 출력은 엔진 자체의 운영 텔레메트리 형식이며 프로세스 간 wire
@@ -200,7 +201,7 @@ SID 경계로 producer를 격리합니다. 복수 카메라 또는 다중 sessio
 22. W4b-0 System+CurrentUser 영구 등록, NV12/BGRA 이동 컬러바, symbolic link 기반 실제 Media Foundation consumer smoke — 구현, 로컬 1920×1080 NV12 60p 수신 통과, 재부팅 지속성 대기
 23. 장시간 `vividcam_engine` 호스트와 생명주기·heartbeat·텔레메트리 — 구현, Windows 일반 사용자 bounded·Ctrl+C 종료 통과
 24. 엔진 사용자 세션 ↔ Frame Server Local Service 사이 versioned control IPC — 구현, Windows loopback·재연결·bounded shutdown과 설치 DLL LocalService handshake·heartbeat 통과
-25. installer user SID·active console·non-elevated token, regular non-reparse sibling 경로·SHA-256 manifest와 FrameServer service identity를 묶고 heartbeat마다 재검증하는 producer identity gate — 구현, Windows 자동 검증 통과, elevated `validate-windows.ps1` 판정·필요 시 repair와 실제 FrameServer 통합 gate 대기
+25. installer user SID·active console·non-elevated token, regular non-reparse sibling 경로·SHA-256 manifest와 FrameServer service identity를 묶고 heartbeat마다 재검증하는 producer identity gate — 구현, Windows 자동 검증과 elevated `validate-windows.ps1` generation 1 설치·실제 FrameServer handshake 1회·heartbeat ACK 147/147 통과
 26. CPU latest-frame/backpressure 브리지와 실제 합성 프레임 전달 — 다음 구현
 27. D3D11 공유 텍스처 IPC와 CPU fallback, device-lost·재연결 복구
 28. OBS → SOOP → TikTok LIVE Studio 장치 열거·1080p60 수신 W4b

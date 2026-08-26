@@ -211,11 +211,12 @@ Error code and full log:
 - 구현·자동 검증 완료: installer account SID·Program Files engine final path·SHA-256
   manifest, active console·non-elevated/medium token gate, heartbeat 재검증, FrameServer
   service SID·SCM PID production gate, transactional installer rollback, 최소 process/token
-  ACE와 direct manifest/hash/path verifier test; Windows Release CTest 7/7, control
+  ACE와 direct manifest/hash/path verifier test; Windows Release CTest 9/9, control
   transport 5회 반복, Web production build 통과
-- 로컬 대기: 같은 active console 계정의 elevated 64-bit PowerShell에서
-  `validate-windows.ps1` package 판정·필요 시 repair·재검증을 통과한 뒤, 설치된 엔진 ↔
-  실제 FrameServer handshake·heartbeat 확인. 이 항목은 아직 통과로 기록하지 않음
+- 로컬 완료: 같은 active console 계정의 elevated 64-bit PowerShell에서
+  `validate-windows.ps1`가 generation 1 package 설치·재검증과 등록 source 1920x1080 NV12
+  60p 샘플 12개 수신을 통과. 이어 설치된 일반 사용자 엔진 ↔ 실제 FrameServer handshake
+  1회, heartbeat ACK 147/147, protocol error 0, rejected peer 0 확인
 - 클라우드 다음 범위: W4b-2b CPU latest-frame IPC → D3D11 공유 텍스처 IPC
 - 로컬 다음 상태: OBS 등록 장치 컬러바·control 수신 통과 후 SOOP·TikTok LIVE Studio까지 1080p60 W4b 확장
 - 병행 범위: D3D11 이미지·텍스트 렌더러, 데스크톱 UI bridge, 실제 1080p60 입력 및 장치 매트릭스

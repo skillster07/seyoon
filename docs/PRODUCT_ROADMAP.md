@@ -58,9 +58,11 @@ service SID·SCM PID를 함께 검증합니다. source는 engine token user가 i
 설치 sibling과 manifest 경로가 regular non-reparse file로 같은 최종 경로를 가리키는지와
 파일 SHA-256을 handshake 전뿐 아니라 매 heartbeat마다 다시 확인합니다. engine의
 process/token에는 FrameServer SID의 최소 조회 권한만 추가합니다. 이 변경은 Windows Release
-CTest 7/7, control transport 5회 반복과 Web 검증을 통과했습니다. 다만 elevated
-`validate-windows.ps1` package 판정·필요 시 자동 repair와 새 manifest를 사용한 실제 Frame
-Server 통합 gate는 확인 대기이며 영상 frame transport는 다음 구현 범위입니다.
+CTest 9/9, control transport 5회 반복과 Web 검증을 통과했습니다. elevated
+`validate-windows.ps1`의 generation 1 package 설치·재검증과 등록 source 1920x1080 NV12 60p
+수신 뒤, 설치된 일반 사용자 engine과 실제 Frame Server가 handshake 1회와 heartbeat ACK
+147/147을 protocol error·rejected peer 없이 통과했습니다. 영상 frame transport는 다음 구현
+범위입니다.
 
 현재 VCIP 1.0 wire는 변경하지 않았습니다. unsigned 개발 빌드에는 설치 경로·SHA-256 pin을
 중간 신뢰 기준으로 사용하고, 배포 서명이 준비되면 Authenticode signer SPKI pin과 필요 시
@@ -148,7 +150,7 @@ restricted broker/package 경계를 추가합니다. 현재 Program Files·HKLM 
 ## 다음 구현 백로그
 
 1. Windows 재부팅 후 W4b-0 영구 등록·재수신 확인
-2. active console 계정으로 새 producer identity manifest를 elevated 설치한 실제 FrameServer handshake·heartbeat 확인
+2. active console 계정으로 새 producer identity manifest를 elevated 설치한 실제 FrameServer handshake·heartbeat 확인 — 완료
 3. CPU latest-frame IPC와 실제 합성 프레임 전달
 4. D3D11 공유 텍스처 IPC와 producer/source 재시작·재연결
 5. Authenticode signer SPKI pin과 producer 격리 경계 보강
