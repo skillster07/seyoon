@@ -33,6 +33,15 @@ class ProducerControlServer::Impl {
     return snapshot_;
   }
 
+  bool publish_cpu_frame(const CpuNv12Frame&, std::string& error) {
+    error = kUnsupported;
+    return false;
+  }
+
+  CpuFrameMailboxSnapshot frame_mailbox_snapshot() const { return {}; }
+
+  std::wstring frame_mailbox_name() const { return {}; }
+
  private:
   std::mutex lifecycle_mutex_;
   mutable std::mutex mutex_;
@@ -60,6 +69,15 @@ class SourceControlClient::Impl {
     std::scoped_lock lock(mutex_);
     return snapshot_;
   }
+
+  std::optional<CpuNv12Frame> take_latest_cpu_frame(std::string& error) {
+    error = kUnsupported;
+    return std::nullopt;
+  }
+
+  CpuFrameMailboxSnapshot frame_mailbox_snapshot() const { return {}; }
+
+  std::wstring frame_mailbox_name() const { return {}; }
 
  private:
   std::mutex lifecycle_mutex_;
@@ -97,6 +115,19 @@ ControlChannelTransportSnapshot ProducerControlServer::snapshot() const {
   return impl_->snapshot();
 }
 
+bool ProducerControlServer::publish_cpu_frame(const CpuNv12Frame& frame,
+                                              std::string& error) {
+  return impl_->publish_cpu_frame(frame, error);
+}
+
+CpuFrameMailboxSnapshot ProducerControlServer::frame_mailbox_snapshot() const {
+  return impl_->frame_mailbox_snapshot();
+}
+
+std::wstring ProducerControlServer::frame_mailbox_name() const {
+  return impl_->frame_mailbox_name();
+}
+
 SourceControlClient::SourceControlClient() : impl_(std::make_unique<Impl>()) {}
 SourceControlClient::~SourceControlClient() = default;
 
@@ -108,6 +139,19 @@ void SourceControlClient::stop() noexcept { impl_->stop(); }
 
 ControlChannelTransportSnapshot SourceControlClient::snapshot() const {
   return impl_->snapshot();
+}
+
+std::optional<CpuNv12Frame> SourceControlClient::take_latest_cpu_frame(
+    std::string& error) {
+  return impl_->take_latest_cpu_frame(error);
+}
+
+CpuFrameMailboxSnapshot SourceControlClient::frame_mailbox_snapshot() const {
+  return impl_->frame_mailbox_snapshot();
+}
+
+std::wstring SourceControlClient::frame_mailbox_name() const {
+  return impl_->frame_mailbox_name();
 }
 
 } // namespace vividcam

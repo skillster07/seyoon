@@ -37,7 +37,7 @@ W3 1080p60 오프스크린 합성·NV12 변환, W4a COM activation·등록 수�
 consumer에서 1920×1080 NV12 60p 이동 컬러바 12개와 정확한 logical cadence를
 전달했습니다. 일반 사용자 세션의 W4b-1 `vividcam_engine`도 장시간 생명주기,
 heartbeat, 제한 시간·Ctrl+C 정상 종료 기반을 갖췄습니다. 재부팅 지속성,
-실제 1080p60 입력과 CPU latest-frame runtime 연결,
+실제 1080p60 입력과 CPU latest-frame publisher·consumer 연결,
 OBS·SOOP·TikTok LIVE Studio 수신 W4b는 남아 있습니다.
 
 기본 W4b-2a versioned control은 VCIP 1.0 codec, cross-process heartbeat와 자동
@@ -73,9 +73,19 @@ FrameServer·producer SID의 exact protected DACL과 Medium/no-write-up label을
 Windows Release CTest 10/10, mailbox 5회 반복, WSL GCC `-Werror` CPU/protocol과 16-frame
 synchronized + 140-frame burst cross-process test가 통과했습니다.
 
-이는 transport core 자동 검증만 끝난 상태입니다. control negotiation·mapping lifecycle,
-engine render/readback publisher, MF `RequestSample` consumer/fallback, 설치된 실제 Frame
-Server와 방송 앱 수신은 아직 연결·검증하지 않았으므로 Gate W4b-2b는 진행 중입니다.
+다음 slice에서는 bounded payload I/O와
+`SourceHello → ProducerHello → OpenStream → TransportOffer → TransportAccepted → StreamReady`
+협상을 control worker에 연결했습니다. source가 connection별 mapping을 만들고 engine이
+single writer로 연 뒤에만 full-ready handshake를 기록합니다. heartbeat stale 시 source
+take 경로를 중단하고 검증된 heartbeat 뒤 복구하며, disconnect·reconnect·stop에서는 양쪽
+mailbox를 닫고 reconnect마다 새 connection ID·새 object name을 사용합니다. Windows CTest
+10/10, control transport 5/5, mailbox 3/3, 결정적 3,110,400-byte NV12 roundtrip과
+wrong-order 거부가 통과했습니다.
+
+negotiated mailbox가 있으면 engine은 `frame_transport=ready`를 표시합니다. 그러나 engine
+render/readback publisher와 MF `RequestSample` consumer/fallback은 아직 연결하지 않아 등록
+카메라는 계속 컬러바를 반환합니다. 설치된 실제 Frame Server의 `Global\` cross-session
+mapping과 방송 앱 수신도 아직 검증하지 않았으므로 Gate W4b-2b는 진행 중입니다.
 
 기존 VCIP 1.0 header·version과 prior message 계약은 유지하고 frame bytes 대신 compact
 negotiation payload만 추가했습니다. unsigned 개발 빌드에는 설치 경로·SHA-256 pin을
@@ -165,14 +175,15 @@ restricted broker/package 경계를 추가합니다. 현재 Program Files·HKLM 
 
 1. Windows 재부팅 후 W4b-0 영구 등록·재수신 확인
 2. active console 계정으로 새 producer identity manifest를 elevated 설치한 실제 FrameServer handshake·heartbeat 확인 — 완료
-3. CPU latest-frame IPC core — codec·mailbox·cross-process 자동 검증 완료; control lifecycle,
-   engine publisher, MF consumer/fallback과 실제 합성 프레임 전달 진행 예정
-4. 설치된 Frame Server의 `Global\` CPU mapping, producer/source 재시작·재연결 검증
-5. D3D11 공유 텍스처 IPC와 CPU fallback
-6. Authenticode signer SPKI pin과 producer 격리 경계 보강
-7. canonical pipe precreation DoS 완화와 RDP·복수 사용자 session broker 설계
-8. OBS → SOOP → TikTok LIVE Studio W4b 호환·재연결 검증
-9. 실제 1080p60 입력과 지원 장치 매트릭스(NVIDIA/AMD/Intel, 캡처 카드, 웹캠)
-10. 4시간 기본 파이프라인 안정성 기준선
-11. 얼굴 추적·세그멘테이션 SDK 자체 개발/라이선스 비교
-12. 웹 프로토타입 사용성 테스트와 이벤트 로깅은 네이티브 트랙과 병행
+3. 설치된 Frame Server의 `Global\` CPU mapping, producer/source 재시작·재연결 검증
+4. CPU latest-frame IPC — codec·mailbox·authenticated control lifecycle 자동 검증 완료;
+   engine render/readback CPU NV12 publisher·60p pacing 진행 예정
+5. MF `RequestSample` latest-frame consumer와 부재·torn·stale 컬러바/마지막-frame fallback
+6. D3D11 공유 텍스처 IPC와 CPU fallback
+7. Authenticode signer SPKI pin과 producer 격리 경계 보강
+8. canonical pipe precreation DoS 완화와 RDP·복수 사용자 session broker 설계
+9. OBS → SOOP → TikTok LIVE Studio W4b 호환·재연결 검증
+10. 실제 1080p60 입력과 지원 장치 매트릭스(NVIDIA/AMD/Intel, 캡처 카드, 웹캠)
+11. 4시간 기본 파이프라인 안정성 기준선
+12. 얼굴 추적·세그멘테이션 SDK 자체 개발/라이선스 비교
+13. 웹 프로토타입 사용성 테스트와 이벤트 로깅은 네이티브 트랙과 병행

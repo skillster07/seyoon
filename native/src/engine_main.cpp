@@ -230,7 +230,13 @@ int main(int argc, char** argv) {
       break;
     }
     if (tick_result == vividcam::EngineTickResult::Heartbeat && !options.quiet) {
-      print_status("heartbeat", host.snapshot(now));
+      auto status = host.snapshot(now);
+#ifdef _WIN32
+      status.frame_transport_ready =
+          control_server_started &&
+          control_server.frame_mailbox_snapshot().open;
+#endif
+      print_status("heartbeat", status);
     }
 
     auto wake_at = now + kSignalPollInterval;

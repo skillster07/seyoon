@@ -1,7 +1,10 @@
 #pragma once
 
+#include "vividcam/cpu_frame_transport.hpp"
+
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -47,6 +50,12 @@ class ProducerControlServer {
                            std::string& error);
   void stop() noexcept;
   [[nodiscard]] ControlChannelTransportSnapshot snapshot() const;
+  // Gated data-plane access: no caller can retain a mailbox past a control
+  // disconnect, and the call fails while no fully negotiated session exists.
+  [[nodiscard]] bool publish_cpu_frame(const CpuNv12Frame& frame,
+                                       std::string& error);
+  [[nodiscard]] CpuFrameMailboxSnapshot frame_mailbox_snapshot() const;
+  [[nodiscard]] std::wstring frame_mailbox_name() const;
 
  private:
   class Impl;
@@ -67,6 +76,12 @@ class SourceControlClient {
   [[nodiscard]] bool start(std::wstring route, std::string& error);
   void stop() noexcept;
   [[nodiscard]] ControlChannelTransportSnapshot snapshot() const;
+  // Returns no frame (without an error) while disconnected, negotiating,
+  // stale, reconnecting, or when no newer mailbox generation is available.
+  [[nodiscard]] std::optional<CpuNv12Frame> take_latest_cpu_frame(
+      std::string& error);
+  [[nodiscard]] CpuFrameMailboxSnapshot frame_mailbox_snapshot() const;
+  [[nodiscard]] std::wstring frame_mailbox_name() const;
 
  private:
   class Impl;

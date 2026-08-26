@@ -31,9 +31,9 @@ Media Foundation Capture
 | Virtual Camera | Windows 카메라 출력 | IMFMediaSource/Stream과 MFCreateVirtualCamera 등록·시작·정지·제거, 테스트 패턴 fallback, 비차단 control client와 설치 producer identity verifier 구현; CPU mailbox consumer 연결 예정 |
 | MF Adapter | 타입·샘플·이벤트·descriptor | IMFMediaType, GPU IMFSample, event queue, stream/presentation descriptor와 기본 NV12 선택 구현 |
 | Pixel Conversion | 합성 BGRA를 소비자 포맷으로 변환 | CPU 기준 변환과 D3D11 Video Processor NV12 zero-copy·출력 풀 구현, Windows GPU 변환 통과 |
-| Engine Host | 사용자 세션 장기 실행·상태 보고 | `Program Files`에 설치되는 별도 `vividcam_engine`, 생명주기·heartbeat·정상 종료와 bounded smoke 구현 |
-| Control IPC | Engine ↔ Frame Server 제어·상태 | VCIP 1.0 codec, FrameServer service SID 전용 pipe, 설치 사용자 SID·active console·token·경로·SHA-256 identity binding과 heartbeat 재검증 구현; compact frame-transport negotiation codec 구현, state-machine 연결 예정 |
-| Frame IPC | Engine → Frame Server 영상 데이터 | 1920×1080 NV12 60/1p 두 슬롯 CPU latest-frame shared-memory core 구현·cross-process 검증 통과; engine·MF runtime 연결 예정 |
+| Engine Host | 사용자 세션 장기 실행·상태 보고 | `Program Files`에 설치되는 별도 `vividcam_engine`, 생명주기·heartbeat·정상 종료, negotiated mailbox의 `frame_transport=ready` 텔레메트리 구현 |
+| Control IPC | Engine ↔ Frame Server 제어·상태 | VCIP 1.0 codec, FrameServer service SID 전용 pipe, 설치 사용자 SID·active console·token·경로·SHA-256 identity binding과 heartbeat 재검증, compact frame-transport negotiation·mailbox 수명주기 구현 |
+| Frame IPC | Engine → Frame Server 영상 데이터 | 1920×1080 NV12 60/1p 두 슬롯 CPU latest-frame shared-memory core와 connection별 source-create/engine-open 수명주기 구현; engine publisher·MF consumer 연결 예정 |
 | Bridge | 데스크톱 UI와 네이티브 명령·상태 연결 | 예정 |
 
 ## 프로세스 경계
@@ -54,10 +54,15 @@ rejected peer 없이 통과했습니다.
 
 W4b-2b의 첫 slice에서는 같은 경계를 위한 compact negotiation codec과 별도 CPU
 latest-frame mailbox core를 구현했습니다. Windows Release CTest 10/10, mailbox 5회 반복,
-WSL GCC `-Werror` CPU/protocol과 cross-process loopback은 통과했습니다. 그러나 이 core는
-아직 control worker, engine renderer 또는 Media Foundation source에 연결되지 않았습니다.
-등록 카메라는 계속 W4b-0 컬러바 fallback을 반환하며 실제 합성 영상 전달과 설치된
-Frame Server의 cross-session data-plane 검증은 남아 있습니다.
+WSL GCC `-Werror` CPU/protocol과 cross-process loopback을 통과했습니다. 다음 slice에서는
+bounded control payload I/O, stream negotiation과 connection별 mailbox 수명주기를 engine과
+source control worker에 연결했습니다. Windows CTest 10/10, control transport 5/5, mailbox
+3/3, 결정적 3,110,400-byte NV12 roundtrip과 wrong-order 거부가 통과했습니다.
+
+negotiated mailbox가 있으면 engine heartbeat는 `frame_transport=ready`를 표시합니다. 다만
+engine renderer publisher와 Media Foundation `RequestSample` consumer는 아직 연결하지 않아
+등록 카메라는 계속 W4b-0 컬러바 fallback을 반환합니다. 설치된 실제 Frame Server의
+`Global\` cross-session data-plane도 아직 로컬 검증하지 않았습니다.
 
 W4b-1의 `schema=1` 출력은 엔진 자체의 운영 텔레메트리 형식이며 프로세스 간 wire
 protocol은 아닙니다. W4b-2a는 사용자 세션의 엔진을 비동기 named-pipe server,
@@ -151,7 +156,7 @@ signer SPKI pin을 추가하고, 위험 모델이 요구하면 restricted broker
 SID 경계로 producer를 격리합니다. 복수 카메라 또는 다중 session을 지원할 때는 설치 시
 생성해 ACL로 보호하는 registration ID를 route와 identity 정책에 포함해야 합니다.
 
-### W4b-2b CPU latest-frame transport core
+### W4b-2b CPU latest-frame transport와 control lifecycle
 
 packed 1920×1080 NV12 한 장은 3,110,400 bytes이므로 64 KiB payload 상한의 VCIP control
 pipe로 보내지 않습니다. VCIP 1.0에는 `OpenStream` 48-byte,
@@ -191,9 +196,40 @@ Frame Server가 `Global\` mapping을 생성하는 로컬 통합 gate를 대신�
 cross-process test는 16개 synchronized 1080p frame을 확인한 뒤 consumer의 per-frame 대기
 없이 140개를 burst publish합니다. consumer가 burst 동안 읽지 않아도 producer는 5초
 bounded budget 안에 완료하고, 마지막 sequence와 payload가 정확하며 overwrite가 발생하고
-torn·invalid는 0이어야 합니다. 이 코어를 실제 영상 경로로 만들려면 control negotiation과
-mapping lifecycle, engine GPU readback/CPU publisher, MF `RequestSample` consumer/fallback을
-차례로 연결해야 합니다.
+torn·invalid는 0이어야 합니다.
+
+control worker의 연결 협상은 다음 순서를 사용합니다. 모든 payload는 먼저 64 KiB 상한과
+header 계약을 검증한 뒤 고정 크기 codec으로 decode합니다.
+
+```text
+SourceHello
+  → ProducerHello
+  → OpenStream(1920×1080 NV12 60/1p)
+  → TransportOffer(CPU shared memory, two slots)
+  → TransportAccepted
+  → StreamReady
+  → Heartbeat / HeartbeatAck
+```
+
+source는 offer를 검증한 뒤 route digest와 무작위 connection ID로 mapping을 생성하고
+`TransportAccepted`를 보냅니다. source는 이미 검증한 manifest SID로 DACL을 만듭니다.
+engine은 exact descriptor를 검증하고 자기 token SID로 그
+DACL이 정확히 일치하는지 확인한 뒤 mapping을 writer로 열고 `StreamReady`를 반환합니다. 양쪽
+`successful_handshakes`는 `StreamReady`와 mailbox publication이 끝난 뒤 증가하므로 full-ready
+session 수를 뜻합니다. wrong-order·sequence·correlation·payload 계약 위반은 mailbox를
+게시하지 않고 protocol error로 종료합니다.
+
+현재 mailbox는 control session이 소유합니다. raw mailbox pointer는 외부에 노출하지 않고
+mutex-gated publish/take·snapshot API만 제공합니다. disconnect·reconnect·stop·예외 시 close하며,
+reconnect는 새 connection ID와 새 object name을 사용합니다. source가 heartbeat stale 상태에
+들어가면 take 경로를 suspend하고, producer identity를 다시 검증한 heartbeat를 받은 뒤 같은
+session mailbox를 resume합니다. 자동 loopback은 이
+lifecycle과 한 장의 정확한 3,110,400-byte NV12 publish/consume을 검증했습니다.
+
+다음 구현은 engine 합성 결과의 GPU readback·CPU NV12 publisher와 60p pacing, MF
+`RequestSample` latest-frame consumer와 부재·torn·stale 컬러바/마지막-frame fallback
+순서입니다. 그 전에 설치된 실제 Frame Server가 `Global\` mapping을 만들고 active user
+engine이 cross-session으로 여는 로컬 gate를 별도로 통과해야 합니다.
 
 ## 60p 타이밍 원칙
 
@@ -254,8 +290,9 @@ mapping lifecycle, engine GPU readback/CPU publisher, MF `RequestSample` consume
 23. 장시간 `vividcam_engine` 호스트와 생명주기·heartbeat·텔레메트리 — 구현, Windows 일반 사용자 bounded·Ctrl+C 종료 통과
 24. 엔진 사용자 세션 ↔ Frame Server Local Service 사이 versioned control IPC — 구현, Windows loopback·재연결·bounded shutdown과 설치 DLL LocalService handshake·heartbeat 통과
 25. installer user SID·active console·non-elevated token, regular non-reparse sibling 경로·SHA-256 manifest와 FrameServer service identity를 묶고 heartbeat마다 재검증하는 producer identity gate — 구현, Windows 자동 검증과 elevated `validate-windows.ps1` generation 1 설치·실제 FrameServer handshake 1회·heartbeat ACK 147/147 통과
-26. CPU latest-frame 브리지 — compact negotiation codec·두 슬롯 mailbox core와 Windows
-    cross-process 자동 검증 구현, control lifecycle·engine publisher·MF consumer와 실제
-    설치 FrameServer 전달은 진행 예정
+26. CPU latest-frame 브리지 — compact negotiation codec·두 슬롯 mailbox core, bounded
+    payload I/O와 connection별 create/open·stale·재연결·종료 lifecycle 구현; Windows CTest
+    10/10, control 5/5, mailbox 3/3 통과. 설치 FrameServer `Global\` gate, engine publisher와
+    MF consumer 진행 예정
 27. D3D11 공유 텍스처 IPC와 CPU fallback, device-lost·재연결 복구
 28. OBS → SOOP → TikTok LIVE Studio 장치 열거·1080p60 수신 W4b

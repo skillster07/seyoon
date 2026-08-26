@@ -1,6 +1,7 @@
 #include "vividcam/control_channel_transport.hpp"
 
 #include "vividcam/control_channel_state.hpp"
+#include "vividcam/cpu_frame_transport.hpp"
 #include "vividcam/producer_identity.hpp"
 #include "vividcam/producer_ipc_protocol.hpp"
 
@@ -210,6 +211,10 @@ IoResult read_exact(HANDLE pipe, HANDLE stop_event, std::span<std::byte> output,
                     Clock::time_point deadline, std::string& error) {
   std::size_t offset = 0;
   while (offset < output.size()) {
+    if (Clock::now() >= deadline) {
+      error = "named-pipe operation timed out";
+      return IoResult::Timeout;
+    }
     UniqueHandle event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
     if (!event.valid()) {
       error = windows_error("CreateEvent(pipe read)", GetLastError());
@@ -255,6 +260,10 @@ IoResult write_all(HANDLE pipe, HANDLE stop_event,
                    Clock::time_point deadline, std::string& error) {
   std::size_t offset = 0;
   while (offset < input.size()) {
+    if (Clock::now() >= deadline) {
+      error = "named-pipe operation timed out";
+      return IoResult::Timeout;
+    }
     UniqueHandle event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
     if (!event.valid()) {
       error = windows_error("CreateEvent(pipe write)", GetLastError());
@@ -298,6 +307,10 @@ IoResult write_all(HANDLE pipe, HANDLE stop_event,
 IoResult wait_for_header(HANDLE pipe, HANDLE stop_event,
                          Clock::time_point deadline, std::string& error) {
   while (!stop_requested(stop_event)) {
+    if (Clock::now() >= deadline) {
+      error = "named-pipe operation timed out";
+      return IoResult::Timeout;
+    }
     DWORD available = 0;
     if (!PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr)) {
       error = windows_error("PeekNamedPipe", GetLastError());
@@ -328,7 +341,9 @@ IoResult wait_for_header(HANDLE pipe, HANDLE stop_event,
 }
 
 IoResult read_message(HANDLE pipe, HANDLE stop_event, MessageHeader& header,
+                      std::vector<std::byte>& payload,
                       Clock::time_point deadline, std::string& error) {
+  payload.clear();
   const IoResult available =
       wait_for_header(pipe, stop_event, deadline, error);
   if (available != IoResult::Complete) return available;
@@ -343,37 +358,72 @@ IoResult read_message(HANDLE pipe, HANDLE stop_event, MessageHeader& header,
     return IoResult::ProtocolFailure;
   }
   if (header.payload_bytes != 0) {
-    // The W4b-2a control messages are deliberately payload-free. Refuse the
-    // payload before allocating or letting it desynchronize the byte stream.
-    error = "W4b-2a control message payload must be empty";
-    return IoResult::ProtocolFailure;
+    try {
+      payload.resize(header.payload_bytes);
+    } catch (const std::bad_alloc&) {
+      error = "Unable to allocate the bounded control message payload";
+      return IoResult::Failed;
+    }
+    result = read_exact(pipe, stop_event, payload, deadline, error);
+    if (result != IoResult::Complete) {
+      payload.clear();
+      return result;
+    }
   }
+  error.clear();
   return IoResult::Complete;
 }
 
 IoResult write_message(HANDLE pipe, HANDLE stop_event,
                        const MessageHeader& header,
+                       std::span<const std::byte> payload,
                        Clock::time_point deadline, std::string& error) {
   std::vector<std::byte> encoded;
   const producer_ipc::ProtocolError status =
-      producer_ipc::encode_message(header, {}, encoded);
+      producer_ipc::encode_message(header, payload, encoded);
   if (status != producer_ipc::ProtocolError::None) {
     error = std::string(producer_ipc::protocol_error_message(status));
-    return IoResult::ProtocolFailure;
+    return IoResult::Failed;
   }
   return write_all(pipe, stop_event, encoded, deadline, error);
 }
 
-bool random_connection_id(ConnectionId& connection_id, std::string& error) {
-  const NTSTATUS status = BCryptGenRandom(
-      nullptr, connection_id.data(), static_cast<ULONG>(connection_id.size()),
-      BCRYPT_USE_SYSTEM_PREFERRED_RNG);
-  if (!BCRYPT_SUCCESS(status)) {
-    error = ntstatus_error("BCryptGenRandom", status);
-    return false;
+IoResult read_message(HANDLE pipe, HANDLE stop_event, MessageHeader& header,
+                      Clock::time_point deadline, std::string& error) {
+  std::vector<std::byte> payload;
+  const IoResult result =
+      read_message(pipe, stop_event, header, payload, deadline, error);
+  if (result == IoResult::Complete && !payload.empty()) {
+    error = "control message payload must be empty";
+    return IoResult::ProtocolFailure;
   }
-  error.clear();
-  return true;
+  return result;
+}
+
+IoResult write_message(HANDLE pipe, HANDLE stop_event,
+                       const MessageHeader& header,
+                       Clock::time_point deadline, std::string& error) {
+  return write_message(pipe, stop_event, header, {}, deadline, error);
+}
+
+bool random_connection_id(ConnectionId& connection_id, std::string& error) {
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    const NTSTATUS status = BCryptGenRandom(
+        nullptr, connection_id.data(),
+        static_cast<ULONG>(connection_id.size()),
+        BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    if (!BCRYPT_SUCCESS(status)) {
+      error = ntstatus_error("BCryptGenRandom", status);
+      return false;
+    }
+    if (std::any_of(connection_id.begin(), connection_id.end(),
+                    [](std::uint8_t byte) { return byte != 0; })) {
+      error.clear();
+      return true;
+    }
+  }
+  error = "BCryptGenRandom returned an invalid all-zero connection ID";
+  return false;
 }
 
 bool equal_connection_id(const ConnectionId& left,
@@ -390,13 +440,15 @@ bool valid_control_message(const MessageHeader& header, MessageType type,
                            const ConnectionId& connection_id,
                            std::uint64_t minimum_sequence,
                            std::uint64_t correlation_id,
+                           std::uint32_t expected_payload_bytes,
                            std::string& error) {
   if (header.message_type != type) {
     error = "unexpected control message type";
     return false;
   }
-  if (header.flags != 0 || header.payload_bytes != 0) {
-    error = "control message flags and payload must be zero";
+  if (header.flags != 0 ||
+      header.payload_bytes != expected_payload_bytes) {
+    error = "control message flags or payload length is invalid";
     return false;
   }
   if (!equal_connection_id(header.connection_id, connection_id)) {
@@ -1026,8 +1078,13 @@ bool query_token_session_id(HANDLE token, DWORD& session_id,
 }
 
 bool verify_connected_server(HANDLE pipe, bool production_policy,
-                             std::uint32_t& process_id, std::string& error) {
+                             std::uint32_t& process_id,
+                             std::wstring* verified_producer_user_sid,
+                             std::string& error) {
   process_id = 0;
+  if (verified_producer_user_sid != nullptr) {
+    verified_producer_user_sid->clear();
+  }
   ULONG raw_process_id = 0;
   if (!GetNamedPipeServerProcessId(pipe, &raw_process_id)) {
     error = windows_error("GetNamedPipeServerProcessId", GetLastError());
@@ -1173,6 +1230,9 @@ bool verify_connected_server(HANDLE pipe, bool production_policy,
                                         expected_package_path, error)) {
       return false;
     }
+    if (verified_producer_user_sid != nullptr) {
+      *verified_producer_user_sid = manifest.engine_user_sid;
+    }
   }
 
   // Production additionally pins the observed image to the installed path and
@@ -1286,22 +1346,32 @@ bool hash_route(std::wstring_view route, std::array<std::uint8_t, 32>& digest,
   return true;
 }
 
+bool make_route_digest(std::wstring_view route, std::wstring& route_digest,
+                       std::string& error) {
+  route_digest.clear();
+  std::array<std::uint8_t, 32> digest{};
+  if (!hash_route(route, digest, error)) return false;
+
+  constexpr wchar_t hex[] = L"0123456789abcdef";
+  route_digest.reserve(digest.size() * 2U);
+  for (std::uint8_t byte : digest) {
+    route_digest.push_back(hex[byte >> 4U]);
+    route_digest.push_back(hex[byte & 0x0fU]);
+  }
+  error.clear();
+  return true;
+}
+
 } // namespace
 
 bool make_vividcam_control_pipe_name(std::wstring_view route,
                                      std::wstring& pipe_name,
                                      std::string& error) {
   pipe_name.clear();
-  std::array<std::uint8_t, 32> digest{};
-  if (!hash_route(route, digest, error)) return false;
-
-  constexpr wchar_t hex[] = L"0123456789abcdef";
+  std::wstring route_digest;
+  if (!make_route_digest(route, route_digest, error)) return false;
   pipe_name.assign(kPipePrefix);
-  pipe_name.reserve(pipe_name.size() + digest.size() * 2);
-  for (std::uint8_t byte : digest) {
-    pipe_name.push_back(hex[byte >> 4U]);
-    pipe_name.push_back(hex[byte & 0x0fU]);
-  }
+  pipe_name.append(route_digest);
   error.clear();
   return true;
 }
@@ -1393,6 +1463,79 @@ bool find_registered_vividcam_control_route(std::wstring& route,
   return true;
 }
 
+namespace {
+
+producer_ipc::OpenStreamPayload fixed_open_stream_payload() {
+  static_assert(kCpuFrameNv12Bytes <=
+                std::numeric_limits<std::uint32_t>::max());
+  producer_ipc::OpenStreamPayload payload;
+  payload.width = kCpuFrameWidth;
+  payload.height = kCpuFrameHeight;
+  payload.frame_rate_numerator = 60;
+  payload.frame_rate_denominator = 1;
+  payload.pixel_format = producer_ipc::FramePixelFormat::Nv12;
+  payload.plane0_stride_bytes = kCpuFrameYStrideBytes;
+  payload.plane1_stride_bytes = kCpuFrameUvStrideBytes;
+  payload.frame_bytes = static_cast<std::uint32_t>(kCpuFrameNv12Bytes);
+  return payload;
+}
+
+producer_ipc::TransportOfferPayload fixed_transport_offer_payload() {
+  static_assert(cpu_frame_mailbox_layout::kHeaderBytes <=
+                std::numeric_limits<std::uint32_t>::max());
+  producer_ipc::TransportOfferPayload payload;
+  payload.frame_capacity_bytes =
+      static_cast<std::uint32_t>(kCpuFrameNv12Bytes);
+  payload.mapping_header_bytes =
+      static_cast<std::uint32_t>(cpu_frame_mailbox_layout::kHeaderBytes);
+  payload.mapping_capacity_bytes = cpu_frame_mailbox_layout::kMappingBytes;
+  return payload;
+}
+
+producer_ipc::TransportDescriptorPayload transport_descriptor_for(
+    const producer_ipc::TransportOfferPayload& offer) {
+  producer_ipc::TransportDescriptorPayload descriptor;
+  descriptor.transport_kind = offer.transport_kind;
+  descriptor.layout_major = offer.layout_major;
+  descriptor.layout_minor = offer.layout_minor;
+  descriptor.slot_count = offer.slot_count;
+  descriptor.mapping_header_bytes = offer.mapping_header_bytes;
+  descriptor.frame_capacity_bytes = offer.frame_capacity_bytes;
+  descriptor.mapping_capacity_bytes = offer.mapping_capacity_bytes;
+  descriptor.flags = offer.flags;
+  descriptor.reserved = offer.reserved;
+  return descriptor;
+}
+
+bool negotiation_payload_succeeded(
+    producer_ipc::NegotiationPayloadError status,
+    std::string_view operation, std::string& error) {
+  if (status == producer_ipc::NegotiationPayloadError::None) {
+    error.clear();
+    return true;
+  }
+  error.assign(operation);
+  error.append(": ");
+  error.append(producer_ipc::negotiation_payload_error_message(status));
+  return false;
+}
+
+CpuFrameMailboxOptions mailbox_options(
+    bool production_policy, const std::wstring& route_digest,
+    const ConnectionId& connection_id,
+    const std::wstring& producer_user_sid) {
+  CpuFrameMailboxOptions options;
+  options.scope = production_policy
+                      ? CpuFrameMailboxScope::ProductionGlobal
+                      : CpuFrameMailboxScope::NonProductionLocal;
+  options.route_digest = route_digest;
+  options.connection_id = connection_id;
+  options.producer_user_sid = producer_user_sid;
+  return options;
+}
+
+} // namespace
+
 class ProducerControlServer::Impl {
  public:
   bool start(std::wstring route, std::string engine_instance_id,
@@ -1403,6 +1546,8 @@ class ProducerControlServer::Impl {
     const bool production_policy = uses_production_peer_policy(route);
     std::wstring pipe_name;
     if (!make_vividcam_control_pipe_name(route, pipe_name, error)) return false;
+    std::wstring route_digest;
+    if (!make_route_digest(route, route_digest, error)) return false;
     if (engine_instance_id.empty()) {
       error = "Producer engine instance ID must not be empty";
       return false;
@@ -1431,6 +1576,7 @@ class ProducerControlServer::Impl {
     }
 
     pipe_name_ = std::move(pipe_name);
+    route_digest_ = std::move(route_digest);
     engine_instance_id_ = std::move(engine_instance_id);
     production_policy_ = production_policy;
     snapshot_ = {};
@@ -1451,34 +1597,61 @@ class ProducerControlServer::Impl {
   void stop() noexcept {
     std::scoped_lock lifecycle_lock(lifecycle_mutex_);
     std::thread worker;
+    std::shared_ptr<CpuFrameMailboxProducer> mailbox;
     {
       std::scoped_lock lock(mutex_);
       if (!worker_.joinable()) {
         snapshot_.running = false;
         snapshot_.connected = false;
         snapshot_.peer_process_id = 0;
-        return;
+        mailbox = std::move(active_mailbox_);
+      } else {
+        (void)SetEvent(stop_event_.get());
+        // PipePublicationGuard clears this slot under the same mutex before
+        // the owning UniqueHandle closes, so the handle cannot become stale.
+        if (active_pipe_ != INVALID_HANDLE_VALUE) {
+          (void)CancelIoEx(active_pipe_, nullptr);
+        }
+        worker = std::move(worker_);
       }
-      (void)SetEvent(stop_event_.get());
-      // PipePublicationGuard clears this slot under the same mutex before the
-      // owning UniqueHandle closes, so a non-invalid value cannot be stale or
-      // refer to a subsequently reused kernel handle here.
-      if (active_pipe_ != INVALID_HANDLE_VALUE) {
-        (void)CancelIoEx(active_pipe_, nullptr);
-      }
-      worker = std::move(worker_);
     }
+    if (mailbox) mailbox->close();
+    if (!worker.joinable()) return;
     if (worker.joinable()) worker.join();
-    std::scoped_lock lock(mutex_);
-    snapshot_.running = false;
-    snapshot_.connected = false;
-    snapshot_.peer_process_id = 0;
-    active_pipe_ = INVALID_HANDLE_VALUE;
+    {
+      std::scoped_lock lock(mutex_);
+      snapshot_.running = false;
+      snapshot_.connected = false;
+      snapshot_.peer_process_id = 0;
+      active_pipe_ = INVALID_HANDLE_VALUE;
+      mailbox = std::move(active_mailbox_);
+    }
+    if (mailbox) mailbox->close();
   }
 
   ControlChannelTransportSnapshot snapshot() const {
     std::scoped_lock lock(mutex_);
     return snapshot_;
+  }
+
+  bool publish_cpu_frame(const CpuNv12Frame& frame, std::string& error) {
+    std::scoped_lock lock(mutex_);
+    if (!active_mailbox_) {
+      error = "CPU frame mailbox is not ready";
+      return false;
+    }
+    return active_mailbox_->publish(frame, error);
+  }
+
+  CpuFrameMailboxSnapshot frame_mailbox_snapshot() const {
+    std::scoped_lock lock(mutex_);
+    return active_mailbox_ ? active_mailbox_->snapshot()
+                           : CpuFrameMailboxSnapshot{};
+  }
+
+  std::wstring frame_mailbox_name() const {
+    std::scoped_lock lock(mutex_);
+    return active_mailbox_ ? active_mailbox_->name() : std::wstring{};
   }
 
  private:
@@ -1495,6 +1668,30 @@ class ProducerControlServer::Impl {
     HANDLE pipe_;
   };
 
+  class MailboxPublicationGuard {
+   public:
+    explicit MailboxPublicationGuard(Impl& owner) noexcept : owner_(owner) {}
+    ~MailboxPublicationGuard() { unpublish(); }
+    MailboxPublicationGuard(const MailboxPublicationGuard&) = delete;
+    MailboxPublicationGuard& operator=(const MailboxPublicationGuard&) = delete;
+
+    void publish(std::shared_ptr<CpuFrameMailboxProducer> mailbox) {
+      mailbox_ = std::move(mailbox);
+      owner_.publish_mailbox(mailbox_);
+    }
+
+   private:
+    void unpublish() noexcept {
+      if (!mailbox_) return;
+      owner_.clear_mailbox(mailbox_);
+      mailbox_->close();
+      mailbox_.reset();
+    }
+
+    Impl& owner_;
+    std::shared_ptr<CpuFrameMailboxProducer> mailbox_;
+  };
+
   void run_guarded() noexcept {
     try {
       worker_main();
@@ -1506,13 +1703,17 @@ class ProducerControlServer::Impl {
       std::scoped_lock lock(mutex_);
       snapshot_.last_error = "Producer control worker stopped unexpectedly";
     }
-    std::scoped_lock lock(mutex_);
-    snapshot_.running = false;
-    snapshot_.connected = false;
-    snapshot_.peer_process_id = 0;
-    // Defensive only: every published pipe is normally cleared by
-    // PipePublicationGuard before its UniqueHandle closes.
-    active_pipe_ = INVALID_HANDLE_VALUE;
+    std::shared_ptr<CpuFrameMailboxProducer> mailbox;
+    {
+      std::scoped_lock lock(mutex_);
+      snapshot_.running = false;
+      snapshot_.connected = false;
+      snapshot_.peer_process_id = 0;
+      // Defensive only: publication guards normally clear both resources.
+      active_pipe_ = INVALID_HANDLE_VALUE;
+      mailbox = std::move(active_mailbox_);
+    }
+    if (mailbox) mailbox->close();
   }
 
   void publish_pipe(HANDLE pipe) {
@@ -1525,6 +1726,18 @@ class ProducerControlServer::Impl {
     if (active_pipe_ == pipe) active_pipe_ = INVALID_HANDLE_VALUE;
     snapshot_.connected = false;
     snapshot_.peer_process_id = 0;
+  }
+
+  void publish_mailbox(
+      const std::shared_ptr<CpuFrameMailboxProducer>& mailbox) {
+    std::scoped_lock lock(mutex_);
+    active_mailbox_ = mailbox;
+  }
+
+  void clear_mailbox(
+      const std::shared_ptr<CpuFrameMailboxProducer>& mailbox) {
+    std::scoped_lock lock(mutex_);
+    if (active_mailbox_ == mailbox) active_mailbox_.reset();
   }
 
   void record_error(const std::string& error, bool protocol_error,
@@ -1567,6 +1780,8 @@ class ProducerControlServer::Impl {
       return false;
     }
 
+    const Clock::time_point negotiation_deadline =
+        Clock::now() + kHandshakeTimeout;
     MessageHeader producer_hello;
     producer_hello.message_type = MessageType::ProducerHello;
     producer_hello.message_sequence = 1;
@@ -1574,7 +1789,7 @@ class ProducerControlServer::Impl {
     producer_hello.connection_id = source_hello.connection_id;
     const IoResult write_hello = write_message(
         pipe, stop_event_.get(), producer_hello,
-        Clock::now() + kHandshakeTimeout, session_error);
+        negotiation_deadline, session_error);
     if (write_hello != IoResult::Complete) {
       if (write_hello == IoResult::ProtocolFailure) {
         record_error(session_error, true, false);
@@ -1582,6 +1797,132 @@ class ProducerControlServer::Impl {
       return false;
     }
 
+    std::vector<std::byte> payload;
+    MessageHeader open_stream_header;
+    IoResult negotiation_result = read_message(
+        pipe, stop_event_.get(), open_stream_header, payload,
+        negotiation_deadline, session_error);
+    if (negotiation_result != IoResult::Complete) {
+      if (negotiation_result == IoResult::ProtocolFailure) {
+        record_error(session_error, true, false);
+      }
+      return false;
+    }
+    if (!valid_control_message(
+            open_stream_header, MessageType::OpenStream,
+            source_hello.connection_id, source_hello.message_sequence,
+            producer_hello.message_sequence,
+            producer_ipc::kOpenStreamPayloadBytes, session_error)) {
+      record_error(session_error, true, false);
+      return false;
+    }
+    producer_ipc::OpenStreamPayload open_stream;
+    if (!negotiation_payload_succeeded(
+            producer_ipc::decode_open_stream_payload(payload, open_stream),
+            "OpenStream payload is invalid", session_error)) {
+      record_error(session_error, true, false);
+      return false;
+    }
+
+    const producer_ipc::TransportOfferPayload offer =
+        fixed_transport_offer_payload();
+    if (!negotiation_payload_succeeded(
+            producer_ipc::validate_transport_offer_for_open_stream(open_stream,
+                                                                    offer),
+            "OpenStream cannot use the CPU mailbox offer", session_error)) {
+      record_error(session_error, true, false);
+      return false;
+    }
+    std::vector<std::byte> offer_bytes;
+    if (!negotiation_payload_succeeded(
+            producer_ipc::encode_transport_offer_payload(offer, offer_bytes),
+            "Could not encode TransportOffer", session_error)) {
+      return false;
+    }
+    MessageHeader offer_header;
+    offer_header.message_type = MessageType::TransportOffer;
+    offer_header.message_sequence = 2;
+    offer_header.correlation_id = open_stream_header.message_sequence;
+    offer_header.connection_id = source_hello.connection_id;
+    offer_header.payload_bytes = static_cast<std::uint32_t>(offer_bytes.size());
+    negotiation_result = write_message(
+        pipe, stop_event_.get(), offer_header, offer_bytes,
+        negotiation_deadline, session_error);
+    if (negotiation_result != IoResult::Complete) return false;
+
+    MessageHeader accepted_header;
+    negotiation_result = read_message(
+        pipe, stop_event_.get(), accepted_header, payload,
+        negotiation_deadline, session_error);
+    if (negotiation_result != IoResult::Complete) {
+      if (negotiation_result == IoResult::ProtocolFailure) {
+        record_error(session_error, true, false);
+      }
+      return false;
+    }
+    if (!valid_control_message(
+            accepted_header, MessageType::TransportAccepted,
+            source_hello.connection_id, open_stream_header.message_sequence,
+            offer_header.message_sequence,
+            producer_ipc::kTransportDescriptorPayloadBytes, session_error)) {
+      record_error(session_error, true, false);
+      return false;
+    }
+    producer_ipc::TransportDescriptorPayload accepted_descriptor;
+    if (!negotiation_payload_succeeded(
+            producer_ipc::decode_transport_descriptor_payload(
+                payload, accepted_descriptor),
+            "TransportAccepted payload is invalid", session_error) ||
+        !negotiation_payload_succeeded(
+            producer_ipc::validate_transport_descriptor_for_offer(
+                offer, accepted_descriptor),
+            "TransportAccepted changed the CPU mailbox offer",
+            session_error)) {
+      record_error(session_error, true, false);
+      return false;
+    }
+
+    std::wstring producer_user_sid;
+    if (production_policy_) {
+      TokenIdentity engine_identity;
+      if (!current_process_identity(engine_identity, session_error) ||
+          !sid_to_string(engine_identity.user_sid, producer_user_sid,
+                         session_error)) {
+        return false;
+      }
+    }
+    auto mailbox = open_cpu_frame_mailbox_producer(
+        mailbox_options(production_policy_, route_digest_,
+                        source_hello.connection_id, producer_user_sid),
+        session_error);
+    if (!mailbox) return false;
+
+    const producer_ipc::TransportDescriptorPayload ready_descriptor =
+        transport_descriptor_for(offer);
+    std::vector<std::byte> ready_bytes;
+    if (!negotiation_payload_succeeded(
+            producer_ipc::encode_transport_descriptor_payload(ready_descriptor,
+                                                               ready_bytes),
+            "Could not encode StreamReady", session_error)) {
+      mailbox->close();
+      return false;
+    }
+    MessageHeader ready_header;
+    ready_header.message_type = MessageType::StreamReady;
+    ready_header.message_sequence = 3;
+    ready_header.correlation_id = accepted_header.message_sequence;
+    ready_header.connection_id = source_hello.connection_id;
+    ready_header.payload_bytes = static_cast<std::uint32_t>(ready_bytes.size());
+    negotiation_result = write_message(
+        pipe, stop_event_.get(), ready_header, ready_bytes,
+        negotiation_deadline, session_error);
+    if (negotiation_result != IoResult::Complete) {
+      mailbox->close();
+      return false;
+    }
+
+    MailboxPublicationGuard mailbox_publication(*this);
+    mailbox_publication.publish(std::move(mailbox));
     {
       std::scoped_lock lock(mutex_);
       snapshot_.connected = true;
@@ -1590,8 +1931,8 @@ class ProducerControlServer::Impl {
       snapshot_.last_error.clear();
     }
 
-    std::uint64_t server_sequence = 1;
-    std::uint64_t client_sequence = source_hello.message_sequence;
+    std::uint64_t server_sequence = ready_header.message_sequence;
+    std::uint64_t client_sequence = accepted_header.message_sequence;
     while (!stop_requested(stop_event_.get())) {
       const DWORD waited = WaitForSingleObject(
           stop_event_.get(), static_cast<DWORD>(kHeartbeatInterval.count()));
@@ -1634,7 +1975,7 @@ class ProducerControlServer::Impl {
       if (!valid_control_message(
               acknowledgement, MessageType::HeartbeatAck,
               source_hello.connection_id, client_sequence, server_sequence,
-              session_error)) {
+              0, session_error)) {
         record_error(session_error, true, false);
         return false;
       }
@@ -1646,8 +1987,8 @@ class ProducerControlServer::Impl {
   }
 
   void worker_main() {
-    // The engine instance ID is intentionally not serialized in W4b-2a: all
-    // four handshake/heartbeat messages have zero-length payloads.
+    // The engine instance ID remains local telemetry; VCIP negotiation derives
+    // its per-session mailbox name from the route digest and connection ID.
     (void)engine_instance_id_;
     while (!stop_requested(stop_event_.get())) {
       PSECURITY_DESCRIPTOR raw_descriptor = nullptr;
@@ -1717,9 +2058,11 @@ class ProducerControlServer::Impl {
   UniqueHandle stop_event_;
   std::thread worker_;
   std::wstring pipe_name_;
+  std::wstring route_digest_;
   std::string engine_instance_id_;
   bool production_policy_{false};
   HANDLE active_pipe_{INVALID_HANDLE_VALUE};
+  std::shared_ptr<CpuFrameMailboxProducer> active_mailbox_;
 };
 
 class SourceControlClient::Impl {
@@ -1731,6 +2074,8 @@ class SourceControlClient::Impl {
     const bool production_policy = uses_production_peer_policy(route);
     std::wstring pipe_name;
     if (!make_vividcam_control_pipe_name(route, pipe_name, error)) return false;
+    std::wstring route_digest;
+    if (!make_route_digest(route, route_digest, error)) return false;
 
     std::scoped_lock state_lock(mutex_);
     if (worker_.joinable()) {
@@ -1749,6 +2094,7 @@ class SourceControlClient::Impl {
     }
 
     pipe_name_ = std::move(pipe_name);
+    route_digest_ = std::move(route_digest);
     production_policy_ = production_policy;
     snapshot_ = {};
     snapshot_.running = true;
@@ -1768,34 +2114,59 @@ class SourceControlClient::Impl {
   void stop() noexcept {
     std::scoped_lock lifecycle_lock(lifecycle_mutex_);
     std::thread worker;
+    std::shared_ptr<CpuFrameMailboxSource> mailbox;
     {
       std::scoped_lock lock(mutex_);
       if (!worker_.joinable()) {
         snapshot_.running = false;
         snapshot_.connected = false;
         snapshot_.peer_process_id = 0;
-        return;
+        mailbox = std::move(active_mailbox_);
+      } else {
+        (void)SetEvent(stop_event_.get());
+        if (active_pipe_ != INVALID_HANDLE_VALUE) {
+          (void)CancelIoEx(active_pipe_, nullptr);
+        }
+        worker = std::move(worker_);
       }
-      (void)SetEvent(stop_event_.get());
-      // PipePublicationGuard clears this slot under the same mutex before the
-      // owning UniqueHandle closes, so a non-invalid value cannot be stale or
-      // refer to a subsequently reused kernel handle here.
-      if (active_pipe_ != INVALID_HANDLE_VALUE) {
-        (void)CancelIoEx(active_pipe_, nullptr);
-      }
-      worker = std::move(worker_);
     }
+    if (mailbox) mailbox->close();
+    if (!worker.joinable()) return;
     if (worker.joinable()) worker.join();
-    std::scoped_lock lock(mutex_);
-    snapshot_.running = false;
-    snapshot_.connected = false;
-    snapshot_.peer_process_id = 0;
-    active_pipe_ = INVALID_HANDLE_VALUE;
+    {
+      std::scoped_lock lock(mutex_);
+      snapshot_.running = false;
+      snapshot_.connected = false;
+      snapshot_.peer_process_id = 0;
+      active_pipe_ = INVALID_HANDLE_VALUE;
+      mailbox = std::move(active_mailbox_);
+    }
+    if (mailbox) mailbox->close();
   }
 
   ControlChannelTransportSnapshot snapshot() const {
     std::scoped_lock lock(mutex_);
     return snapshot_;
+  }
+
+  std::optional<CpuNv12Frame> take_latest_cpu_frame(std::string& error) {
+    std::scoped_lock lock(mutex_);
+    if (!active_mailbox_) {
+      error.clear();
+      return std::nullopt;
+    }
+    return active_mailbox_->take_latest(error);
+  }
+
+  CpuFrameMailboxSnapshot frame_mailbox_snapshot() const {
+    std::scoped_lock lock(mutex_);
+    return active_mailbox_ ? active_mailbox_->snapshot()
+                           : CpuFrameMailboxSnapshot{};
+  }
+
+  std::wstring frame_mailbox_name() const {
+    std::scoped_lock lock(mutex_);
+    return active_mailbox_ ? active_mailbox_->name() : std::wstring{};
   }
 
  private:
@@ -1818,6 +2189,44 @@ class SourceControlClient::Impl {
     HANDLE pipe_;
   };
 
+  class MailboxPublicationGuard {
+   public:
+    explicit MailboxPublicationGuard(Impl& owner) noexcept : owner_(owner) {}
+    ~MailboxPublicationGuard() { close(); }
+    MailboxPublicationGuard(const MailboxPublicationGuard&) = delete;
+    MailboxPublicationGuard& operator=(const MailboxPublicationGuard&) = delete;
+
+    void publish(std::shared_ptr<CpuFrameMailboxSource> mailbox) {
+      mailbox_ = std::move(mailbox);
+      resume();
+    }
+
+    void suspend() {
+      if (!mailbox_ || !published_) return;
+      owner_.clear_mailbox(mailbox_);
+      published_ = false;
+    }
+
+    void resume() {
+      if (!mailbox_ || published_) return;
+      owner_.publish_mailbox(mailbox_);
+      published_ = true;
+    }
+
+   private:
+    void close() noexcept {
+      if (!mailbox_) return;
+      if (published_) owner_.clear_mailbox(mailbox_);
+      mailbox_->close();
+      mailbox_.reset();
+      published_ = false;
+    }
+
+    Impl& owner_;
+    std::shared_ptr<CpuFrameMailboxSource> mailbox_;
+    bool published_{false};
+  };
+
   void run_guarded() noexcept {
     try {
       worker_main();
@@ -1829,13 +2238,16 @@ class SourceControlClient::Impl {
       std::scoped_lock lock(mutex_);
       snapshot_.last_error = "Source control worker stopped unexpectedly";
     }
-    std::scoped_lock lock(mutex_);
-    snapshot_.running = false;
-    snapshot_.connected = false;
-    snapshot_.peer_process_id = 0;
-    // Defensive only: every published pipe is normally cleared by
-    // PipePublicationGuard before its UniqueHandle closes.
-    active_pipe_ = INVALID_HANDLE_VALUE;
+    std::shared_ptr<CpuFrameMailboxSource> mailbox;
+    {
+      std::scoped_lock lock(mutex_);
+      snapshot_.running = false;
+      snapshot_.connected = false;
+      snapshot_.peer_process_id = 0;
+      active_pipe_ = INVALID_HANDLE_VALUE;
+      mailbox = std::move(active_mailbox_);
+    }
+    if (mailbox) mailbox->close();
   }
 
   void publish_pipe(HANDLE pipe) {
@@ -1848,6 +2260,16 @@ class SourceControlClient::Impl {
     if (active_pipe_ == pipe) active_pipe_ = INVALID_HANDLE_VALUE;
     snapshot_.connected = false;
     snapshot_.peer_process_id = 0;
+  }
+
+  void publish_mailbox(const std::shared_ptr<CpuFrameMailboxSource>& mailbox) {
+    std::scoped_lock lock(mutex_);
+    active_mailbox_ = mailbox;
+  }
+
+  void clear_mailbox(const std::shared_ptr<CpuFrameMailboxSource>& mailbox) {
+    std::scoped_lock lock(mutex_);
+    if (active_mailbox_ == mailbox) active_mailbox_.reset();
   }
 
   void record_error(const std::string& error, bool protocol_error,
@@ -1887,6 +2309,7 @@ class SourceControlClient::Impl {
   }
 
   IoResult run_session(HANDLE pipe, ControlChannelStateMachine& state,
+                       const std::wstring& verified_producer_user_sid,
                        std::string& session_error) {
     ConnectionId connection_id{};
     if (!random_connection_id(connection_id, session_error)) {
@@ -1915,9 +2338,106 @@ class SourceControlClient::Impl {
       return IoResult::ProtocolFailure;
     }
 
+    const Clock::time_point negotiation_deadline =
+        Clock::now() + kHandshakeTimeout;
+    const producer_ipc::OpenStreamPayload open_stream =
+        fixed_open_stream_payload();
+    std::vector<std::byte> open_stream_bytes;
+    if (!negotiation_payload_succeeded(
+            producer_ipc::encode_open_stream_payload(open_stream,
+                                                      open_stream_bytes),
+            "Could not encode OpenStream", session_error)) {
+      return IoResult::Failed;
+    }
+    MessageHeader open_stream_header;
+    open_stream_header.message_type = MessageType::OpenStream;
+    open_stream_header.message_sequence = 2;
+    open_stream_header.correlation_id = producer_hello.message_sequence;
+    open_stream_header.connection_id = connection_id;
+    open_stream_header.payload_bytes =
+        static_cast<std::uint32_t>(open_stream_bytes.size());
+    result = write_message(pipe, stop_event_.get(), open_stream_header,
+                           open_stream_bytes, negotiation_deadline,
+                           session_error);
+    if (result != IoResult::Complete) return result;
+
+    std::vector<std::byte> payload;
+    MessageHeader offer_header;
+    result = read_message(pipe, stop_event_.get(), offer_header, payload,
+                          negotiation_deadline, session_error);
+    if (result != IoResult::Complete) return result;
+    if (!valid_control_message(
+            offer_header, MessageType::TransportOffer, connection_id,
+            producer_hello.message_sequence, open_stream_header.message_sequence,
+            producer_ipc::kTransportOfferPayloadBytes, session_error)) {
+      return IoResult::ProtocolFailure;
+    }
+    producer_ipc::TransportOfferPayload offer;
+    if (!negotiation_payload_succeeded(
+            producer_ipc::decode_transport_offer_payload(payload, offer),
+            "TransportOffer payload is invalid", session_error) ||
+        !negotiation_payload_succeeded(
+            producer_ipc::validate_transport_offer_for_open_stream(open_stream,
+                                                                    offer),
+            "TransportOffer does not match OpenStream", session_error)) {
+      return IoResult::ProtocolFailure;
+    }
+
+    auto mailbox = create_cpu_frame_mailbox_source(
+        mailbox_options(production_policy_, route_digest_, connection_id,
+                        verified_producer_user_sid),
+        session_error);
+    if (!mailbox) return IoResult::Failed;
+
+    const producer_ipc::TransportDescriptorPayload accepted_descriptor =
+        transport_descriptor_for(offer);
+    std::vector<std::byte> accepted_bytes;
+    if (!negotiation_payload_succeeded(
+            producer_ipc::encode_transport_descriptor_payload(
+                accepted_descriptor, accepted_bytes),
+            "Could not encode TransportAccepted", session_error)) {
+      return IoResult::Failed;
+    }
+    MessageHeader accepted_header;
+    accepted_header.message_type = MessageType::TransportAccepted;
+    accepted_header.message_sequence = 3;
+    accepted_header.correlation_id = offer_header.message_sequence;
+    accepted_header.connection_id = connection_id;
+    accepted_header.payload_bytes =
+        static_cast<std::uint32_t>(accepted_bytes.size());
+    result = write_message(pipe, stop_event_.get(), accepted_header,
+                           accepted_bytes, negotiation_deadline,
+                           session_error);
+    if (result != IoResult::Complete) return result;
+
+    MessageHeader ready_header;
+    result = read_message(pipe, stop_event_.get(), ready_header, payload,
+                          negotiation_deadline, session_error);
+    if (result != IoResult::Complete) return result;
+    if (!valid_control_message(
+            ready_header, MessageType::StreamReady, connection_id,
+            offer_header.message_sequence, accepted_header.message_sequence,
+            producer_ipc::kTransportDescriptorPayloadBytes, session_error)) {
+      return IoResult::ProtocolFailure;
+    }
+    producer_ipc::TransportDescriptorPayload ready_descriptor;
+    if (!negotiation_payload_succeeded(
+            producer_ipc::decode_transport_descriptor_payload(
+                payload, ready_descriptor),
+            "StreamReady payload is invalid", session_error) ||
+        !negotiation_payload_succeeded(
+            producer_ipc::validate_transport_descriptor_for_offer(
+                offer, ready_descriptor),
+            "StreamReady changed the accepted CPU mailbox offer",
+            session_error)) {
+      return IoResult::ProtocolFailure;
+    }
+
     if (!state.mark_handshake_ready(Clock::now(), session_error)) {
       return IoResult::Failed;
     }
+    MailboxPublicationGuard mailbox_publication(*this);
+    mailbox_publication.publish(std::move(mailbox));
     {
       std::scoped_lock lock(mutex_);
       snapshot_.connected = true;
@@ -1925,8 +2445,8 @@ class SourceControlClient::Impl {
       snapshot_.last_error.clear();
     }
 
-    std::uint64_t server_sequence = producer_hello.message_sequence;
-    std::uint64_t client_sequence = source_hello.message_sequence;
+    std::uint64_t server_sequence = ready_header.message_sequence;
+    std::uint64_t client_sequence = accepted_header.message_sequence;
     while (!stop_requested(stop_event_.get())) {
       MessageHeader heartbeat;
       result = read_message(pipe, stop_event_.get(), heartbeat,
@@ -1934,6 +2454,9 @@ class SourceControlClient::Impl {
       if (result == IoResult::Timeout) {
         const ControlChannelAdvanceResult advanced =
             state.advance(Clock::now(), session_error);
+        if (advanced == ControlChannelAdvanceResult::BecameStale) {
+          mailbox_publication.suspend();
+        }
         if (advanced == ControlChannelAdvanceResult::BecameReconnecting) {
           session_error = "producer heartbeat timed out";
           return IoResult::ReconnectScheduled;
@@ -1946,7 +2469,7 @@ class SourceControlClient::Impl {
       if (result != IoResult::Complete) return result;
       if (!valid_control_message(heartbeat, MessageType::Heartbeat,
                                  connection_id, server_sequence, 0,
-                                 session_error)) {
+                                 0, session_error)) {
         return IoResult::ProtocolFailure;
       }
       server_sequence = heartbeat.message_sequence;
@@ -1957,10 +2480,11 @@ class SourceControlClient::Impl {
       if (production_policy_) {
         std::uint32_t reverified_process_id = 0;
         if (!verify_connected_server(pipe, true, reverified_process_id,
-                                     session_error)) {
+                                     nullptr, session_error)) {
           return IoResult::Failed;
         }
       }
+      mailbox_publication.resume();
 
       ++client_sequence;
       MessageHeader acknowledgement;
@@ -2013,8 +2537,10 @@ class SourceControlClient::Impl {
       // unpublishes before UniqueHandle closes the underlying object.
       PipePublicationGuard pipe_publication(*this, pipe.get());
       std::uint32_t server_process_id = 0;
+      std::wstring verified_producer_user_sid;
       if (!verify_connected_server(pipe.get(), production_policy_,
-                                   server_process_id, error)) {
+                                   server_process_id,
+                                   &verified_producer_user_sid, error)) {
         record_error(error, false, true);
         std::string state_error;
         if (!state.mark_connection_failed(error, Clock::now(), state_error)) {
@@ -2036,7 +2562,9 @@ class SourceControlClient::Impl {
         break;
       }
       std::string session_error;
-      const IoResult result = run_session(pipe.get(), state, session_error);
+      const IoResult result = run_session(pipe.get(), state,
+                                          verified_producer_user_sid,
+                                          session_error);
       pipe_publication.unpublish();
       pipe.reset();
       if (result == IoResult::Stopped || stop_requested(stop_event_.get())) {
@@ -2071,8 +2599,10 @@ class SourceControlClient::Impl {
   UniqueHandle stop_event_;
   std::thread worker_;
   std::wstring pipe_name_;
+  std::wstring route_digest_;
   bool production_policy_{false};
   HANDLE active_pipe_{INVALID_HANDLE_VALUE};
+  std::shared_ptr<CpuFrameMailboxSource> active_mailbox_;
 };
 
 ProducerControlServer::ProducerControlServer() : impl_(std::make_unique<Impl>()) {}
@@ -2090,6 +2620,19 @@ ControlChannelTransportSnapshot ProducerControlServer::snapshot() const {
   return impl_->snapshot();
 }
 
+bool ProducerControlServer::publish_cpu_frame(const CpuNv12Frame& frame,
+                                              std::string& error) {
+  return impl_->publish_cpu_frame(frame, error);
+}
+
+CpuFrameMailboxSnapshot ProducerControlServer::frame_mailbox_snapshot() const {
+  return impl_->frame_mailbox_snapshot();
+}
+
+std::wstring ProducerControlServer::frame_mailbox_name() const {
+  return impl_->frame_mailbox_name();
+}
+
 SourceControlClient::SourceControlClient() : impl_(std::make_unique<Impl>()) {}
 SourceControlClient::~SourceControlClient() { stop(); }
 
@@ -2101,6 +2644,19 @@ void SourceControlClient::stop() noexcept { impl_->stop(); }
 
 ControlChannelTransportSnapshot SourceControlClient::snapshot() const {
   return impl_->snapshot();
+}
+
+std::optional<CpuNv12Frame> SourceControlClient::take_latest_cpu_frame(
+    std::string& error) {
+  return impl_->take_latest_cpu_frame(error);
+}
+
+CpuFrameMailboxSnapshot SourceControlClient::frame_mailbox_snapshot() const {
+  return impl_->frame_mailbox_snapshot();
+}
+
+std::wstring SourceControlClient::frame_mailbox_name() const {
+  return impl_->frame_mailbox_name();
 }
 
 } // namespace vividcam
