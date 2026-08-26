@@ -12,6 +12,7 @@ endif()
 
 add_library(vividcam_core
   src/control_channel_state.cpp
+  src/cpu_frame_transport.cpp
   src/engine_host.cpp
   src/engine_options.cpp
   src/output_profile.cpp
@@ -43,6 +44,7 @@ endif()
 if(WIN32)
   add_library(vividcam_platform
     src/platform/windows/control_channel_transport.cpp
+    src/platform/windows/cpu_frame_transport.cpp
     src/platform/windows/producer_identity.cpp
     src/platform/windows/media_foundation_devices.cpp
     src/platform/windows/media_foundation_capture.cpp
@@ -67,6 +69,7 @@ if(WIN32)
 else()
   add_library(vividcam_platform
     src/platform/portable/control_channel_transport.cpp
+    src/platform/portable/cpu_frame_transport.cpp
     src/platform/portable/producer_identity.cpp
     src/platform/portable/camera_devices.cpp
     src/platform/portable/camera_capture.cpp
@@ -153,6 +156,22 @@ if(VIVIDCAM_BUILD_TESTS)
   endif()
   add_test(NAME vividcam_producer_identity_tests
     COMMAND vividcam_producer_identity_tests)
+
+  add_executable(vividcam_cpu_frame_transport_tests
+    tests/cpu_frame_transport_tests.cpp)
+  target_link_libraries(vividcam_cpu_frame_transport_tests PRIVATE
+    vividcam_core vividcam_platform)
+  if(MSVC)
+    target_compile_options(vividcam_cpu_frame_transport_tests PRIVATE
+      /W4 /permissive- /UNDEBUG)
+  else()
+    target_compile_options(vividcam_cpu_frame_transport_tests PRIVATE
+      -Wall -Wextra -Wpedantic -Werror -UNDEBUG)
+  endif()
+  add_test(NAME vividcam_cpu_frame_transport_tests
+    COMMAND vividcam_cpu_frame_transport_tests)
+  set_tests_properties(vividcam_cpu_frame_transport_tests PROPERTIES
+    TIMEOUT 20)
 
   if(WIN32)
     add_executable(vividcam_control_channel_transport_tests

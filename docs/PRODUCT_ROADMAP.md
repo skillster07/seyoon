@@ -37,7 +37,7 @@ W3 1080p60 오프스크린 합성·NV12 변환, W4a COM activation·등록 수�
 consumer에서 1920×1080 NV12 60p 이동 컬러바 12개와 정확한 logical cadence를
 전달했습니다. 일반 사용자 세션의 W4b-1 `vividcam_engine`도 장시간 생명주기,
 heartbeat, 제한 시간·Ctrl+C 정상 종료 기반을 갖췄습니다. 재부팅 지속성,
-실제 1080p60 입력과 CPU latest-frame producer bridge,
+실제 1080p60 입력과 CPU latest-frame runtime 연결,
 OBS·SOOP·TikTok LIVE Studio 수신 W4b는 남아 있습니다.
 
 기본 W4b-2a versioned control은 VCIP 1.0 codec, cross-process heartbeat와 자동
@@ -61,10 +61,24 @@ process/token에는 FrameServer SID의 최소 조회 권한만 추가합니다. 
 CTest 9/9, control transport 5회 반복과 Web 검증을 통과했습니다. elevated
 `validate-windows.ps1`의 generation 1 package 설치·재검증과 등록 source 1920x1080 NV12 60p
 수신 뒤, 설치된 일반 사용자 engine과 실제 Frame Server가 handshake 1회와 heartbeat ACK
-147/147을 protocol error·rejected peer 없이 통과했습니다. 영상 frame transport는 다음 구현
-범위입니다.
+147/147을 protocol error·rejected peer 없이 통과했습니다. 실제 합성 frame data-plane 연결은
+후속 범위입니다.
 
-현재 VCIP 1.0 wire는 변경하지 않았습니다. unsigned 개발 빌드에는 설치 경로·SHA-256 pin을
+W4b-2b의 첫 transport core로 VCIP compact negotiation codec과 고정
+1920×1080 NV12 60/1p CPU mailbox를 구현했습니다. 큰 frame은 control pipe 밖의 두 슬롯
+latest-frame shared memory에 두며, 4,096-byte header와 3,112,960-byte slot 두 개를 합쳐
+전체 6,230,016 bytes입니다. shared CAS로 writer 하나만 허용하고 per-frame ACK나
+backpressure 없이 최신 frame이 이전 frame을 덮어씁니다. production mapping은 SYSTEM·
+FrameServer·producer SID의 exact protected DACL과 Medium/no-write-up label을 요구합니다.
+Windows Release CTest 10/10, mailbox 5회 반복, WSL GCC `-Werror` CPU/protocol과 16-frame
+synchronized + 140-frame burst cross-process test가 통과했습니다.
+
+이는 transport core 자동 검증만 끝난 상태입니다. control negotiation·mapping lifecycle,
+engine render/readback publisher, MF `RequestSample` consumer/fallback, 설치된 실제 Frame
+Server와 방송 앱 수신은 아직 연결·검증하지 않았으므로 Gate W4b-2b는 진행 중입니다.
+
+기존 VCIP 1.0 header·version과 prior message 계약은 유지하고 frame bytes 대신 compact
+negotiation payload만 추가했습니다. unsigned 개발 빌드에는 설치 경로·SHA-256 pin을
 중간 신뢰 기준으로 사용하고, 배포 서명이 준비되면 Authenticode signer SPKI pin과 필요 시
 restricted broker/package 경계를 추가합니다. 현재 Program Files·HKLM 관리자 경계를
 신뢰하며 same-user runtime injection·process hollowing과 canonical pipe precreation DoS는
@@ -151,12 +165,14 @@ restricted broker/package 경계를 추가합니다. 현재 Program Files·HKLM 
 
 1. Windows 재부팅 후 W4b-0 영구 등록·재수신 확인
 2. active console 계정으로 새 producer identity manifest를 elevated 설치한 실제 FrameServer handshake·heartbeat 확인 — 완료
-3. CPU latest-frame IPC와 실제 합성 프레임 전달
-4. D3D11 공유 텍스처 IPC와 producer/source 재시작·재연결
-5. Authenticode signer SPKI pin과 producer 격리 경계 보강
-6. canonical pipe precreation DoS 완화와 RDP·복수 사용자 session broker 설계
-7. OBS → SOOP → TikTok LIVE Studio W4b 호환·재연결 검증
-8. 실제 1080p60 입력과 지원 장치 매트릭스(NVIDIA/AMD/Intel, 캡처 카드, 웹캠)
-9. 4시간 기본 파이프라인 안정성 기준선
-10. 얼굴 추적·세그멘테이션 SDK 자체 개발/라이선스 비교
-11. 웹 프로토타입 사용성 테스트와 이벤트 로깅은 네이티브 트랙과 병행
+3. CPU latest-frame IPC core — codec·mailbox·cross-process 자동 검증 완료; control lifecycle,
+   engine publisher, MF consumer/fallback과 실제 합성 프레임 전달 진행 예정
+4. 설치된 Frame Server의 `Global\` CPU mapping, producer/source 재시작·재연결 검증
+5. D3D11 공유 텍스처 IPC와 CPU fallback
+6. Authenticode signer SPKI pin과 producer 격리 경계 보강
+7. canonical pipe precreation DoS 완화와 RDP·복수 사용자 session broker 설계
+8. OBS → SOOP → TikTok LIVE Studio W4b 호환·재연결 검증
+9. 실제 1080p60 입력과 지원 장치 매트릭스(NVIDIA/AMD/Intel, 캡처 카드, 웹캠)
+10. 4시간 기본 파이프라인 안정성 기준선
+11. 얼굴 추적·세그멘테이션 SDK 자체 개발/라이선스 비교
+12. 웹 프로토타입 사용성 테스트와 이벤트 로깅은 네이티브 트랙과 병행
