@@ -328,6 +328,9 @@ try {
     Assert-Condition -Condition ($null -ne $ManifestAcl) `
         -Message "Windows PowerShell 5.1 could not read the registry key ACL"
     $WritableManifest = Open-RegistryKeyWritable -RegistryPath $ManifestKey
+    [byte[]]$PriorEngineHash = 0..31
+    $PriorEngineSid = "S-1-5-21-1366100792-3461352843-3611251064-1001"
+    [string[]]$PriorMultiString = @("preserve-one", "preserve-two")
     try {
         Assert-Condition -Condition (
             $WritableManifest.View -eq
@@ -347,6 +350,18 @@ try {
         $WritableManifest.SetValue(
             "PriorQword", [Int64]42,
             [Microsoft.Win32.RegistryValueKind]::QWord)
+        $WritableManifest.SetValue(
+            "EngineSha256", $PriorEngineHash,
+            [Microsoft.Win32.RegistryValueKind]::Binary)
+        $WritableManifest.SetValue(
+            "EngineUserSid", $PriorEngineSid,
+            [Microsoft.Win32.RegistryValueKind]::String)
+        $WritableManifest.SetValue(
+            "PriorMultiString", $PriorMultiString,
+            [Microsoft.Win32.RegistryValueKind]::MultiString)
+        $WritableManifest.SetValue(
+            "TrailingDword", [Int32]7,
+            [Microsoft.Win32.RegistryValueKind]::DWord)
         $WritableManifest.Flush()
     } finally {
         $WritableManifest.Dispose()
@@ -361,6 +376,14 @@ try {
         $WritableManifest.SetValue(
             "PriorQword", [Int64]99,
             [Microsoft.Win32.RegistryValueKind]::QWord)
+        $WritableManifest.DeleteValue("EngineSha256", $false)
+        $WritableManifest.SetValue(
+            "EngineUserSid", "S-1-5-18",
+            [Microsoft.Win32.RegistryValueKind]::String)
+        $WritableManifest.DeleteValue("PriorMultiString", $false)
+        $WritableManifest.SetValue(
+            "TrailingDword", [Int32]99,
+            [Microsoft.Win32.RegistryValueKind]::DWord)
         $WritableManifest.SetValue(
             "Unexpected", [Int32]1,
             [Microsoft.Win32.RegistryValueKind]::DWord)
@@ -382,6 +405,22 @@ try {
     Assert-Condition -Condition (Test-ProducerIdentityManifestSnapshot `
             -ManifestPath $ManifestKey -ExpectedSnapshot $PriorSnapshot) `
         -Message "Manifest snapshot restore did not reproduce the prior state"
+    Assert-TestRegistryValue -RegistryPath $ManifestKey `
+        -Name "EngineSha256" -ExpectedValue $PriorEngineHash `
+        -ExpectedKind ([Microsoft.Win32.RegistryValueKind]::Binary) `
+        -Label "Existing manifest engine hash"
+    Assert-TestRegistryValue -RegistryPath $ManifestKey `
+        -Name "EngineUserSid" -ExpectedValue $PriorEngineSid `
+        -ExpectedKind ([Microsoft.Win32.RegistryValueKind]::String) `
+        -Label "Existing manifest engine user SID"
+    Assert-TestRegistryValue -RegistryPath $ManifestKey `
+        -Name "PriorMultiString" -ExpectedValue $PriorMultiString `
+        -ExpectedKind ([Microsoft.Win32.RegistryValueKind]::MultiString) `
+        -Label "Existing manifest multi-string"
+    Assert-TestRegistryValue -RegistryPath $ManifestKey `
+        -Name "TrailingDword" -ExpectedValue ([Int32]7) `
+        -ExpectedKind ([Microsoft.Win32.RegistryValueKind]::DWord) `
+        -Label "Existing manifest value after array data"
     Assert-Condition -Condition ($CreatedPaths.Count -eq 3) `
         -Message "First-install hierarchy did not track exactly three new keys"
     Remove-Item -LiteralPath $ManifestKey -Force

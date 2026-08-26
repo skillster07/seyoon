@@ -427,10 +427,8 @@ function Get-RegistryValueSnapshot {
     $Value = $RegistryKey.GetValue(
         $ActualName, $null,
         [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-    if ($Value -is [byte[]]) {
-        [byte[]]$Value = [byte[]]$Value.Clone()
-    } elseif ($Value -is [string[]]) {
-        [string[]]$Value = [string[]]$Value.Clone()
+    if ($Value -is [byte[]] -or $Value -is [string[]]) {
+        $Value = $Value.Clone()
     }
     return [pscustomobject]@{
         Exists = $true
@@ -567,10 +565,8 @@ function Get-ProducerIdentityManifestSnapshot {
         $Value = $Manifest.GetValue(
             $ValueName, $null,
             [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-        if ($Value -is [byte[]]) {
-            [byte[]]$Value = [byte[]]$Value.Clone()
-        } elseif ($Value -is [string[]]) {
-            [string[]]$Value = [string[]]$Value.Clone()
+        if ($Value -is [byte[]] -or $Value -is [string[]]) {
+            $Value = $Value.Clone()
         }
         $Values += [pscustomobject]@{
             Name = $ValueName
