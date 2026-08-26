@@ -49,37 +49,154 @@ if ($AllUsers) {
     $InstallerUserSid = $Identity.User.Value
 }
 
-function Stop-VividCamFrameServerServices {
-    $StoppedServices = @()
-    try {
-        foreach ($ServiceName in @("FrameServerMonitor", "FrameServer")) {
-            $Service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-            if ($null -eq $Service -or $Service.Status -eq "Stopped") { continue }
-            Write-Host "[VIVIDCAM] Stopping $ServiceName to update the loaded camera source" `
-                -ForegroundColor Yellow
-            $StoppedServices += $ServiceName
-            Stop-Service -InputObject $Service -ErrorAction Stop
-            $Service.WaitForStatus(
-                [System.ServiceProcess.ServiceControllerStatus]::Stopped,
-                [TimeSpan]::FromSeconds(15))
-        }
-    } catch {
-        Restart-VividCamFrameServerServices $StoppedServices
-        throw
+function Stop-VividCamFrameServer {
+    $Service = Get-Service -Name "FrameServer" -ErrorAction SilentlyContinue
+    if ($null -eq $Service -or $Service.Status -eq "Stopped") { return }
+    if ($Service.Status -eq "StopPending") {
+        $Service.WaitForStatus(
+            [System.ServiceProcess.ServiceControllerStatus]::Stopped,
+            [TimeSpan]::FromSeconds(15))
+        return
     }
-    return $StoppedServices
-}
-
-function Restart-VividCamFrameServerServices {
-    param([string[]]$ServiceNames)
-    foreach ($ServiceName in @("FrameServer", "FrameServerMonitor")) {
-        if ($ServiceNames -notcontains $ServiceName) { continue }
-        $Service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-        if ($null -eq $Service -or $Service.Status -eq "Running") { continue }
-        Start-Service -InputObject $Service -ErrorAction Stop
+    if ($Service.Status -eq "StartPending") {
         $Service.WaitForStatus(
             [System.ServiceProcess.ServiceControllerStatus]::Running,
             [TimeSpan]::FromSeconds(15))
+        $Service.Refresh()
+    }
+    if (-not $Service.CanStop) {
+        throw ("FrameServer is running but does not accept stop controls. " +
+               "Close applications using a camera and retry.")
+    }
+    Write-Host "[VIVIDCAM] Stopping FrameServer to update the loaded camera source" `
+        -ForegroundColor Yellow
+    Stop-Service -InputObject $Service -ErrorAction Stop
+    $Service.WaitForStatus(
+        [System.ServiceProcess.ServiceControllerStatus]::Stopped,
+        [TimeSpan]::FromSeconds(15))
+}
+
+function Invoke-VividCamDiagnosticsLifecycle {
+    param([string]$DiagnosticsPath, [string]$Argument)
+
+    $Output = @(& $DiagnosticsPath $Argument)
+    $ExitCode = $LASTEXITCODE
+    foreach ($Line in $Output) { Write-Host $Line }
+    return [pscustomobject]@{
+        ExitCode = $ExitCode
+        Output = [string[]]$Output
+    }
+}
+
+function Get-VividCamLifecycleLink {
+    param([string[]]$Output, [string]$Prefix)
+
+    $LinkLine = @($Output | Where-Object {
+        $_.StartsWith($Prefix, [StringComparison]::Ordinal)
+    } | Select-Object -Last 1)
+    if ($LinkLine.Count -ne 1) {
+        throw "VIVIDCAM camera lifecycle output did not contain its symbolic link"
+    }
+    $Link = $LinkLine[0].Substring($Prefix.Length)
+    if ([string]::IsNullOrWhiteSpace($Link)) {
+        throw "VIVIDCAM camera lifecycle returned an empty symbolic link"
+    }
+    return $Link
+}
+
+function Stop-VividCamPersistentCameraForUpdate {
+    param([string]$DiagnosticsPath, [ref]$WasStopped)
+
+    $WasStopped.Value = $false
+    $Result = Invoke-VividCamDiagnosticsLifecycle `
+        -DiagnosticsPath $DiagnosticsPath -Argument "--stop-camera"
+    if ($Result.ExitCode -eq 3) { return $null }
+    if ($Result.ExitCode -ne 0) {
+        throw "Persistent current-user virtual camera stop failed"
+    }
+    # Set the recovery flag before parsing diagnostic text. The camera is
+    # already disabled once the native command returns success.
+    $WasStopped.Value = $true
+    return Get-VividCamLifecycleLink -Output $Result.Output `
+        -Prefix "[persistent-camera] stopped link="
+}
+
+function Start-VividCamPersistentCamera {
+    param([string]$DiagnosticsPath)
+
+    $Result = Invoke-VividCamDiagnosticsLifecycle `
+        -DiagnosticsPath $DiagnosticsPath -Argument "--install-camera"
+    if ($Result.ExitCode -ne 0) {
+        throw "Persistent current-user virtual camera installation failed"
+    }
+    return Get-VividCamLifecycleLink -Output $Result.Output `
+        -Prefix "[persistent-camera] installed/started link="
+}
+
+function Remove-VividCamPersistentCameraForRollback {
+    param([string]$DiagnosticsPath)
+
+    $Result = Invoke-VividCamDiagnosticsLifecycle `
+        -DiagnosticsPath $DiagnosticsPath -Argument "--remove-camera"
+    if ($Result.ExitCode -ne 0) {
+        throw "Persistent current-user virtual camera rollback removal failed"
+    }
+}
+
+function Assert-VividCamCameraIdentity {
+    param([string]$ExpectedLink, [string]$ActualLink)
+
+    if (-not [string]::Equals(
+            $ExpectedLink, $ActualLink, [StringComparison]::Ordinal)) {
+        throw ("Persistent virtual camera identity changed during deployment: " +
+               "$ExpectedLink -> $ActualLink")
+    }
+}
+
+function Publish-VividCamActivationRegistration {
+    param(
+        [string]$RegistrationPath,
+        [string]$ActivationServerPath
+    )
+
+    $InprocServerPath = Join-Path $RegistrationPath "InprocServer32"
+    if (-not (Test-Path -LiteralPath $RegistrationPath)) {
+        New-Item -Path $RegistrationPath | Out-Null
+    }
+    if (-not (Test-Path -LiteralPath $InprocServerPath)) {
+        New-Item -Path $InprocServerPath | Out-Null
+    }
+    Set-Item -Path $RegistrationPath -Value "VIVIDCAM Virtual Camera Source"
+    Set-Item -Path $InprocServerPath -Value $ActivationServerPath
+    Set-ItemProperty -Path $InprocServerPath -Name "ThreadingModel" `
+        -Value "Both"
+}
+
+function Move-VividCamActivationServerToBackup {
+    param([string]$Source, [string]$Destination)
+
+    $Deadline = [DateTime]::UtcNow.AddSeconds(15)
+    $WaitMessageWritten = $false
+    while ($true) {
+        try {
+            Move-Item -LiteralPath $Source -Destination $Destination
+            return
+        } catch {
+            $MoveFailure = $_.Exception.Message
+            if ([DateTime]::UtcNow -ge $Deadline) {
+                throw ("Activation server remains loaded after the virtual " +
+                       "camera was stopped. Close camera applications and " +
+                       "retry; if it remains locked, restart Windows. " +
+                       $MoveFailure)
+            }
+            if (-not $WaitMessageWritten) {
+                Write-Host ("[VIVIDCAM] Waiting for Windows camera services " +
+                            "to release the activation server") `
+                    -ForegroundColor Yellow
+                $WaitMessageWritten = $true
+            }
+            Start-Sleep -Milliseconds 250
+        }
     }
 }
 
@@ -211,6 +328,153 @@ function Open-RegistryKeyWritable {
         throw "Could not open registry key for writing: $RegistryPath"
     }
     return $RegistryKey
+}
+
+function Get-RegistryValueSnapshot {
+    param([string]$RegistryPath, [string]$ValueName)
+
+    $Snapshot = [pscustomobject]@{
+        Exists = $false
+        Name = $ValueName
+        Kind = $null
+        Value = $null
+    }
+    if (-not (Test-Path -LiteralPath $RegistryPath)) {
+        return $Snapshot
+    }
+
+    $RegistryKey = Get-Item -LiteralPath $RegistryPath
+    $MatchingNames = @($RegistryKey.GetValueNames() | Where-Object {
+        [string]::Equals($_, $ValueName, [StringComparison]::OrdinalIgnoreCase)
+    })
+    if ($MatchingNames.Count -eq 0) { return $Snapshot }
+    if ($MatchingNames.Count -ne 1) {
+        throw "Registry value snapshot was ambiguous: $RegistryPath [$ValueName]"
+    }
+
+    $ActualName = [string]$MatchingNames[0]
+    $Value = $RegistryKey.GetValue(
+        $ActualName, $null,
+        [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+    if ($Value -is [byte[]]) {
+        [byte[]]$Value = [byte[]]$Value.Clone()
+    } elseif ($Value -is [string[]]) {
+        [string[]]$Value = [string[]]$Value.Clone()
+    }
+    return [pscustomobject]@{
+        Exists = $true
+        Name = $ActualName
+        Kind = $RegistryKey.GetValueKind($ActualName)
+        Value = $Value
+    }
+}
+
+function Test-RegistryValueSnapshot {
+    param([string]$RegistryPath, $ExpectedSnapshot)
+
+    $ActualSnapshot = Get-RegistryValueSnapshot `
+        -RegistryPath $RegistryPath -ValueName $ExpectedSnapshot.Name
+    if ($ActualSnapshot.Exists -ne $ExpectedSnapshot.Exists) { return $false }
+    if (-not $ExpectedSnapshot.Exists) { return $true }
+    return $ActualSnapshot.Kind -eq $ExpectedSnapshot.Kind -and
+        (Test-RegistryValueDataEqual `
+            -Left $ActualSnapshot.Value -Right $ExpectedSnapshot.Value)
+}
+
+function Restore-RegistryValueSnapshot {
+    param([string]$RegistryPath, $Snapshot)
+
+    $RegistryKey = Open-RegistryKeyWritable -RegistryPath $RegistryPath
+    try {
+        if ($Snapshot.Exists) {
+            $RegistryKey.SetValue(
+                $Snapshot.Name, $Snapshot.Value, $Snapshot.Kind)
+        } else {
+            $RegistryKey.DeleteValue($Snapshot.Name, $false)
+        }
+        $RegistryKey.Flush()
+    } finally {
+        $RegistryKey.Dispose()
+    }
+}
+
+function Get-VividCamComRegistrationSnapshot {
+    param([string]$RegistrationPath)
+
+    $InprocServerPath = Join-Path $RegistrationPath "InprocServer32"
+    return [pscustomobject]@{
+        RootExists = Test-Path -LiteralPath $RegistrationPath
+        RootDefault = Get-RegistryValueSnapshot `
+            -RegistryPath $RegistrationPath -ValueName ""
+        InprocServerExists = Test-Path -LiteralPath $InprocServerPath
+        InprocServerDefault = Get-RegistryValueSnapshot `
+            -RegistryPath $InprocServerPath -ValueName ""
+        ThreadingModel = Get-RegistryValueSnapshot `
+            -RegistryPath $InprocServerPath -ValueName "ThreadingModel"
+    }
+}
+
+function Test-VividCamComRegistrationSnapshot {
+    param([string]$RegistrationPath, $ExpectedSnapshot)
+
+    $InprocServerPath = Join-Path $RegistrationPath "InprocServer32"
+    if ((Test-Path -LiteralPath $RegistrationPath) -ne
+            $ExpectedSnapshot.RootExists) {
+        return $false
+    }
+    if (-not $ExpectedSnapshot.RootExists) { return $true }
+    if ((Test-Path -LiteralPath $InprocServerPath) -ne
+            $ExpectedSnapshot.InprocServerExists) {
+        return $false
+    }
+    if (-not (Test-RegistryValueSnapshot `
+            -RegistryPath $RegistrationPath `
+            -ExpectedSnapshot $ExpectedSnapshot.RootDefault)) {
+        return $false
+    }
+    if (-not $ExpectedSnapshot.InprocServerExists) { return $true }
+    return (Test-RegistryValueSnapshot `
+            -RegistryPath $InprocServerPath `
+            -ExpectedSnapshot $ExpectedSnapshot.InprocServerDefault) -and
+        (Test-RegistryValueSnapshot `
+            -RegistryPath $InprocServerPath `
+            -ExpectedSnapshot $ExpectedSnapshot.ThreadingModel)
+}
+
+function Restore-VividCamComRegistrationSnapshot {
+    param([string]$RegistrationPath, $Snapshot)
+
+    $InprocServerPath = Join-Path $RegistrationPath "InprocServer32"
+    if (-not $Snapshot.RootExists) {
+        if (Test-Path -LiteralPath $RegistrationPath) {
+            Remove-Item -LiteralPath $RegistrationPath -Recurse -Force
+        }
+    } else {
+        if (-not (Test-Path -LiteralPath $RegistrationPath)) {
+            New-Item -Path $RegistrationPath | Out-Null
+        }
+        Restore-RegistryValueSnapshot -RegistryPath $RegistrationPath `
+            -Snapshot $Snapshot.RootDefault
+        if (-not $Snapshot.InprocServerExists) {
+            if (Test-Path -LiteralPath $InprocServerPath) {
+                Remove-Item -LiteralPath $InprocServerPath -Recurse -Force
+            }
+        } else {
+            if (-not (Test-Path -LiteralPath $InprocServerPath)) {
+                New-Item -Path $InprocServerPath | Out-Null
+            }
+            Restore-RegistryValueSnapshot -RegistryPath $InprocServerPath `
+                -Snapshot $Snapshot.InprocServerDefault
+            Restore-RegistryValueSnapshot -RegistryPath $InprocServerPath `
+                -Snapshot $Snapshot.ThreadingModel
+        }
+    }
+
+    if (-not (Test-VividCamComRegistrationSnapshot `
+            -RegistrationPath $RegistrationPath `
+            -ExpectedSnapshot $Snapshot)) {
+        throw "Restored COM activation registration does not match its snapshot"
+    }
 }
 
 function Get-ProducerIdentityManifestSnapshot {
@@ -633,6 +897,16 @@ function Set-ProducerIdentityManifest {
 $Scope = if ($AllUsers) { "all-users" } else { "current-user" }
 $Server = $BuildServer
 $Diagnostics = $BuildDiagnostics
+$Key = if ($AllUsers) {
+    "HKLM:\Software\Classes\CLSID\$Clsid"
+} else {
+    "HKCU:\Software\Classes\CLSID\$Clsid"
+}
+$AllUsersPostCommitErrors = @()
+$PersistentCameraLinkBeforeUpdate = $null
+$PersistentCameraWasStopped = $false
+$ComRegistrationSnapshot = $null
+$FirstAllUsersInstall = $false
 if ($AllUsers) {
     $ProgramFiles = [Environment]::GetFolderPath(
         [Environment+SpecialFolder]::ProgramFiles)
@@ -678,8 +952,16 @@ if ($AllUsers) {
 
     $ManifestSnapshot =
         Get-ProducerIdentityManifestSnapshot $ProducerIdentityKey
+    $ComRegistrationSnapshot =
+        Get-VividCamComRegistrationSnapshot -RegistrationPath $Key
     $ManifestGeneration = Get-NextProducerIdentityGeneration `
         -ManifestPath $ProducerIdentityKey
+
+    $FirstAllUsersInstall = -not $ManifestSnapshot.Exists -and
+        -not $ComRegistrationSnapshot.RootExists -and
+        $null -eq $PriorServerHash -and
+        $null -eq $PriorDiagnosticsHash -and
+        $null -eq $PriorEngineHash
 
     New-Item -ItemType Directory -Path $InstallDirectory -Force | Out-Null
     $OperationId = [Guid]::NewGuid().ToString("N")
@@ -771,12 +1053,21 @@ if ($AllUsers) {
         throw $StageMessage
     }
 
-    $StoppedFrameServerServices = @()
     try {
-        $StoppedFrameServerServices = @(Stop-VividCamFrameServerServices)
+        $PersistentCameraLinkBeforeUpdate =
+            Stop-VividCamPersistentCameraForUpdate `
+                -DiagnosticsPath $BuildDiagnostics `
+                -WasStopped ([ref]$PersistentCameraWasStopped)
+        if ($PersistentCameraWasStopped) {
+            $FirstAllUsersInstall = $false
+        }
+        if ($PersistentCameraWasStopped -or $null -ne $PriorServerHash) {
+            Stop-VividCamFrameServer
+        }
     } catch {
         $StopFailure = $_.Exception.Message
         $StopCleanupErrors = @()
+        $CameraRecoveryFailure = $null
         foreach ($Deployment in $Deployments) {
             if (-not (Test-Path -LiteralPath $Deployment.Stage)) { continue }
             try {
@@ -794,10 +1085,29 @@ if ($AllUsers) {
                 $StopCleanupErrors += $_.Exception.Message
             }
         }
-        $StopMessage = "Could not stop FrameServer for deployment: $StopFailure"
+        if ($PersistentCameraWasStopped) {
+            try {
+                $RestoredCameraLink = Start-VividCamPersistentCamera `
+                    -DiagnosticsPath $BuildDiagnostics
+                if (-not [string]::IsNullOrWhiteSpace(
+                        $PersistentCameraLinkBeforeUpdate)) {
+                    Assert-VividCamCameraIdentity `
+                        -ExpectedLink $PersistentCameraLinkBeforeUpdate `
+                        -ActualLink $RestoredCameraLink
+                }
+                $PersistentCameraWasStopped = $false
+            } catch {
+                $CameraRecoveryFailure = $_.Exception.Message
+            }
+        }
+        $StopMessage =
+            "Could not prepare the virtual camera for deployment: $StopFailure"
         if ($StopCleanupErrors.Count -gt 0) {
             $StopMessage += ("; staging cleanup incomplete: " +
                              ($StopCleanupErrors -join " | "))
+        }
+        if ($null -ne $CameraRecoveryFailure) {
+            $StopMessage += "; camera recovery failed: $CameraRecoveryFailure"
         }
         throw $StopMessage
     }
@@ -805,16 +1115,23 @@ if ($AllUsers) {
     $DeploymentFailure = $null
     $RollbackErrors = @()
     $CleanupErrors = @()
-    $RestartFailure = $null
     $TransactionCommitted = $false
+    $CameraStartAttempted = $false
+    $PackageRollbackSucceeded = $true
     $CreatedProducerIdentityRegistryKeys =
         [System.Collections.Generic.List[string]]::new()
     try {
         foreach ($Deployment in $Deployments) {
             if (-not $Deployment.NeedsUpdate) { continue }
             if ($Deployment.HadTarget) {
-                Move-Item -LiteralPath $Deployment.Target `
-                    -Destination $Deployment.Backup
+                if ($Deployment.Label -eq "activation server") {
+                    Move-VividCamActivationServerToBackup `
+                        -Source $Deployment.Target `
+                        -Destination $Deployment.Backup
+                } else {
+                    Move-Item -LiteralPath $Deployment.Target `
+                        -Destination $Deployment.Backup
+                }
                 $Deployment.BackupCreated = $true
             }
             Move-Item -LiteralPath $Deployment.Stage `
@@ -845,15 +1162,63 @@ if ($AllUsers) {
             -EnginePath $Engine `
             -EngineSha256 $EngineSha256 `
             -EngineUserSid $InstallerUserSid
+
+        Publish-VividCamActivationRegistration `
+            -RegistrationPath $Key -ActivationServerPath $Server
+        $CameraStartAttempted = $true
+        $InstalledCameraLink = Start-VividCamPersistentCamera `
+            -DiagnosticsPath $Diagnostics
+        if ($PersistentCameraWasStopped) {
+            Assert-VividCamCameraIdentity `
+                -ExpectedLink $PersistentCameraLinkBeforeUpdate `
+                -ActualLink $InstalledCameraLink
+        }
+
+        $PersistentCameraWasStopped = $false
         $TransactionCommitted = $true
     } catch {
         $DeploymentFailure = $_.Exception.Message
+
+        if ($CameraStartAttempted) {
+            if (-not $PersistentCameraWasStopped) {
+                try {
+                    Remove-VividCamPersistentCameraForRollback `
+                        -DiagnosticsPath $BuildDiagnostics
+                } catch {
+                    $RollbackErrors +=
+                        "New camera removal failed: $($_.Exception.Message)"
+                }
+            } elseif ($PersistentCameraWasStopped) {
+                try {
+                    $RollbackCameraWasStopped = $false
+                    $null = Stop-VividCamPersistentCameraForUpdate `
+                        -DiagnosticsPath $BuildDiagnostics `
+                        -WasStopped ([ref]$RollbackCameraWasStopped)
+                } catch {
+                    $RollbackErrors +=
+                        "New camera stop failed: $($_.Exception.Message)"
+                }
+            }
+            try {
+                Stop-VividCamFrameServer
+            } catch {
+                $RollbackErrors +=
+                    "FrameServer rollback stop failed: $($_.Exception.Message)"
+            }
+        }
+
         for ($Index = $Deployments.Count - 1; $Index -ge 0; --$Index) {
             $Deployment = $Deployments[$Index]
             try {
                 if ($Deployment.BackupCreated) {
                     if (Test-Path -LiteralPath $Deployment.Target) {
-                        Remove-Item -LiteralPath $Deployment.Target -Force
+                        if ($Deployment.Label -eq "activation server") {
+                            Move-VividCamActivationServerToBackup `
+                                -Source $Deployment.Target `
+                                -Destination $Deployment.Stage
+                        } else {
+                            Remove-Item -LiteralPath $Deployment.Target -Force
+                        }
                     }
                     if (-not (Test-Path -LiteralPath $Deployment.Backup)) {
                         throw "Backup is missing: $($Deployment.Backup)"
@@ -862,12 +1227,18 @@ if ($AllUsers) {
                         -Destination $Deployment.Target
                     $Deployment.BackupCreated = $false
                 } elseif ($Deployment.NewTargetInstalled -and
-                          -not $Deployment.HadTarget) {
-                    if (Test-Path -LiteralPath $Deployment.Target) {
+                          -not $Deployment.HadTarget -and
+                          (Test-Path -LiteralPath $Deployment.Target)) {
+                    if ($Deployment.Label -eq "activation server") {
+                        Move-VividCamActivationServerToBackup `
+                            -Source $Deployment.Target `
+                            -Destination $Deployment.Stage
+                    } else {
                         Remove-Item -LiteralPath $Deployment.Target -Force
                     }
                 }
             } catch {
+                $PackageRollbackSucceeded = $false
                 $RollbackErrors += ("{0} rollback failed: {1}" -f
                                     $Deployment.Label, $_.Exception.Message)
             }
@@ -877,13 +1248,23 @@ if ($AllUsers) {
                 -ManifestPath $ProducerIdentityKey `
                 -Snapshot $ManifestSnapshot
         } catch {
+            $PackageRollbackSucceeded = $false
             $RollbackErrors +=
                 "Producer identity manifest rollback failed: $($_.Exception.Message)"
+        }
+        try {
+            Restore-VividCamComRegistrationSnapshot `
+                -RegistrationPath $Key -Snapshot $ComRegistrationSnapshot
+        } catch {
+            $PackageRollbackSucceeded = $false
+            $RollbackErrors +=
+                "COM registration rollback failed: $($_.Exception.Message)"
         }
         try {
             Remove-EmptyCreatedRegistryKeyPaths `
                 -CreatedPaths $CreatedProducerIdentityRegistryKeys
         } catch {
+            $PackageRollbackSucceeded = $false
             $RollbackErrors +=
                 "Producer identity registry cleanup failed: $($_.Exception.Message)"
         }
@@ -902,8 +1283,23 @@ if ($AllUsers) {
                     throw "A target that did not previously exist remains"
                 }
             } catch {
+                $PackageRollbackSucceeded = $false
                 $RollbackErrors += ("{0} rollback verification failed: {1}" -f
                                     $Deployment.Label, $_.Exception.Message)
+            }
+        }
+
+        if ($PersistentCameraWasStopped -and $PackageRollbackSucceeded) {
+            try {
+                $RestoredCameraLink = Start-VividCamPersistentCamera `
+                    -DiagnosticsPath $BuildDiagnostics
+                Assert-VividCamCameraIdentity `
+                    -ExpectedLink $PersistentCameraLinkBeforeUpdate `
+                    -ActualLink $RestoredCameraLink
+                $PersistentCameraWasStopped = $false
+            } catch {
+                $RollbackErrors +=
+                    "Prior camera recovery failed: $($_.Exception.Message)"
             }
         }
     }
@@ -939,16 +1335,15 @@ if ($AllUsers) {
                 "Could not remove the empty install directory: $($_.Exception.Message)"
         }
     }
-    try {
-        Restart-VividCamFrameServerServices $StoppedFrameServerServices
-    } catch {
-        $RestartFailure = $_.Exception.Message
-    }
-
     if ($null -ne $DeploymentFailure) {
         $FailureMessage = "VIVIDCAM native deployment failed: $DeploymentFailure"
         if ($RollbackErrors.Count -eq 0) {
-            $FailureMessage += "; prior files and manifest were restored"
+            if ($FirstAllUsersInstall) {
+                $FailureMessage += "; new package and camera artifacts were removed"
+            } else {
+                $FailureMessage +=
+                    "; prior files, manifest, COM registration, and camera were restored"
+            }
         } else {
             $FailureMessage += ("; ROLLBACK INCOMPLETE: " +
                                 ($RollbackErrors -join " | "))
@@ -964,39 +1359,31 @@ if ($AllUsers) {
             $FailureMessage += ("; cleanup incomplete: " +
                                 ($CleanupErrors -join " | "))
         }
-        if ($null -ne $RestartFailure) {
-            $FailureMessage += "; FrameServer restart failed: $RestartFailure"
-        }
         throw $FailureMessage
     }
-    if ($CleanupErrors.Count -gt 0 -or $null -ne $RestartFailure) {
-        $PostCommitErrors = @($CleanupErrors)
-        if ($null -ne $RestartFailure) {
-            $PostCommitErrors += "FrameServer restart failed: $RestartFailure"
-        }
-        throw ("VIVIDCAM deployment committed, but post-commit work was incomplete: " +
-               ($PostCommitErrors -join " | "))
+    if ($CleanupErrors.Count -gt 0) {
+        $AllUsersPostCommitErrors += $CleanupErrors
     }
     Write-Host "[VIVIDCAM] Installed producer identity generation $ManifestGeneration" `
         -ForegroundColor Green
-}
-
-$Key = if ($AllUsers) {
-    "HKLM:\Software\Classes\CLSID\$Clsid"
-} else {
-    "HKCU:\Software\Classes\CLSID\$Clsid"
-}
-New-Item -Path "$Key\InprocServer32" -Force | Out-Null
-Set-Item -Path $Key -Value "VIVIDCAM Virtual Camera Source"
-Set-Item -Path "$Key\InprocServer32" -Value $Server
-Set-ItemProperty -Path "$Key\InprocServer32" -Name "ThreadingModel" -Value "Both"
-Write-Host "[VIVIDCAM] Installed $Scope activation server: $Server" -ForegroundColor Green
-
-if ($AllUsers) {
-    & $Diagnostics --install-camera
-    if ($LASTEXITCODE -ne 0) {
-        throw "Persistent current-user virtual camera installation failed"
-    }
+    Write-Host "[VIVIDCAM] Installed $Scope activation server: $Server" `
+        -ForegroundColor Green
     Write-Host "[VIVIDCAM] Installed persistent current-user virtual camera" `
         -ForegroundColor Green
+}
+
+if (-not $AllUsers) {
+    try {
+        Publish-VividCamActivationRegistration `
+            -RegistrationPath $Key -ActivationServerPath $Server
+        Write-Host "[VIVIDCAM] Installed $Scope activation server: $Server" `
+            -ForegroundColor Green
+    } catch {
+        throw "VIVIDCAM activation publication failed: $($_.Exception.Message)"
+    }
+}
+
+if ($AllUsersPostCommitErrors.Count -gt 0) {
+    throw ("VIVIDCAM deployment committed, but post-commit cleanup was incomplete: " +
+           ($AllUsersPostCommitErrors -join " | "))
 }

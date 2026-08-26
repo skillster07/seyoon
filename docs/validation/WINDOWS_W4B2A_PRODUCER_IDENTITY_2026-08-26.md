@@ -63,9 +63,13 @@ owner는 SYSTEM을 우선하고 Windows privilege 상태 때문에 불가능하�
 허용합니다. runtime loader는 보호 DACL, owner, ACE 수·종류·mask·flag와 registry 값의
 형식·길이를 다시 검사하고 하나라도 다르면 fail-closed합니다.
 
-설치기는 교체할 source DLL·diagnostics·engine을 FrameServer 중지 전에 고유한 stage
-파일로 복사하고 SHA-256을 확인합니다. 그다음 서비스를 멈추고 다음 transaction을
-실행합니다.
+설치기는 교체할 source DLL·diagnostics·engine을 고유한 stage 파일로 복사하고 SHA-256을
+확인합니다. 기존 source DLL을 바꿀 때는 동일한 System/CurrentUser 카메라 구성을 다시 열어
+symbolic link를 기록하고 `IMFVirtualCamera::Stop`으로 등록을 삭제하지 않은 채 비활성화한
+다음 `FrameServer`만 정상 중지합니다. source가 생성 과정에서 로드되는 trigger service인
+`FrameServerMonitor`에는 stop control을 보내지 않습니다. 기존 DLL을 backup으로 옮기는
+작업이 성공해야 Windows camera service의 실제 image lock이 풀린 것으로 인정한 뒤 다음
+transaction을 실행합니다.
 
 1. 기존 target이 있으면 고유한 backup 이름으로 이동합니다.
 2. 검증된 stage 파일을 target으로 이동하고 세 target의 SHA-256을 다시 확인합니다.
@@ -77,9 +81,11 @@ owner는 SYSTEM을 우선하고 Windows privilege 상태 때문에 불가능하�
 중간 실패 시 파일을 역순으로 이전 위치에 복원하고 기존 manifest 값·형식·보안
 descriptor를 정확히 복원하며, 복원된 각 파일 해시와 manifest snapshot까지 확인합니다.
 rollback이 완전하지 않으면 남긴 backup 경로와 실패를 명확히 보고합니다. 교체가 필요한
-설치 엔진이 실행 중이면 transaction 전 종료를 요구합니다. all-users 제거는 영구 카메라를
-먼저 제거한 뒤 FrameServer를 멈추고 manifest·설치 파일·COM 등록을 모두 삭제할 때까지
-서비스를 다시 시작하지 않습니다.
+설치 엔진이 실행 중이면 transaction 전 종료를 요구합니다. source 교체 실패 시 이전
+카메라를 같은 symbolic link로 다시 시작하고, 성공 시 새 파일과 COM 등록을 게시한 뒤 같은
+identity로 다시 시작합니다. all-users 제거는 영구 카메라를 먼저 제거한 뒤 FrameServer만
+멈추고 manifest·설치 파일·COM 등록을 삭제합니다. 두 경로 모두 demand/trigger service를
+수동 재시작하지 않고 다음 카메라 활성화에 맡깁니다.
 
 ## production control gate
 

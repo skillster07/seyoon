@@ -28,7 +28,12 @@ if ($ValidatorParserErrors.Count -ne 0) {
 foreach ($FunctionName in @(
         "New-RegistryKeyPath", "Remove-EmptyCreatedRegistryKeyPaths",
         "Open-RegistryKeyWritable", "Test-ByteArraysEqual",
-        "Test-RegistryValueDataEqual", "Get-ProducerIdentityManifestSnapshot",
+        "Test-RegistryValueDataEqual", "Get-RegistryValueSnapshot",
+        "Test-RegistryValueSnapshot", "Restore-RegistryValueSnapshot",
+        "Get-VividCamComRegistrationSnapshot",
+        "Test-VividCamComRegistrationSnapshot",
+        "Restore-VividCamComRegistrationSnapshot",
+        "Get-ProducerIdentityManifestSnapshot",
         "Test-ProducerIdentityManifestSnapshot",
         "Restore-ProducerIdentityManifestSnapshot")) {
     $FunctionAst = $InstallerAst.Find({
@@ -161,6 +166,8 @@ $TestRoot = "HKCU:\Software\VIVIDCAMInstallerRegistryTest_$((
     [Guid]::NewGuid()).ToString('N'))"
 $VirtualCameraKey = Join-Path $TestRoot "VirtualCamera"
 $ManifestKey = Join-Path $VirtualCameraKey "ProducerIdentity"
+$ComRegistrationKey = Join-Path $TestRoot "Classes\CLSID\VIVIDCAM-Test"
+$ComInprocServerKey = Join-Path $ComRegistrationKey "InprocServer32"
 
 function Remove-TestRoot {
     if (Test-Path -LiteralPath $TestRoot) {
@@ -168,9 +175,150 @@ function Remove-TestRoot {
     }
 }
 
+function Set-TestRegistryValue {
+    param(
+        [string]$RegistryPath,
+        [string]$Name,
+        $Value,
+        [Microsoft.Win32.RegistryValueKind]$Kind
+    )
+
+    $RegistryKey = Open-RegistryKeyWritable -RegistryPath $RegistryPath
+    try {
+        $RegistryKey.SetValue($Name, $Value, $Kind)
+        $RegistryKey.Flush()
+    } finally {
+        $RegistryKey.Dispose()
+    }
+}
+
+function Assert-TestRegistryValue {
+    param(
+        [string]$RegistryPath,
+        [string]$Name,
+        $ExpectedValue,
+        [Microsoft.Win32.RegistryValueKind]$ExpectedKind,
+        [string]$Label
+    )
+
+    $Snapshot = Get-RegistryValueSnapshot `
+        -RegistryPath $RegistryPath -ValueName $Name
+    Assert-Condition -Condition $Snapshot.Exists `
+        -Message "$Label was removed"
+    Assert-Condition -Condition ($Snapshot.Kind -eq $ExpectedKind) `
+        -Message "$Label registry kind changed"
+    Assert-Condition -Condition (Test-RegistryValueDataEqual `
+            -Left $Snapshot.Value -Right $ExpectedValue) `
+        -Message "$Label registry data changed"
+}
+
+function Test-ComRegistrationSnapshotRoundTrip {
+    Remove-TestRoot
+
+    $AbsentSnapshot = Get-VividCamComRegistrationSnapshot `
+        -RegistrationPath $ComRegistrationKey
+    New-Item -Path $ComInprocServerKey -Force | Out-Null
+    Set-TestRegistryValue -RegistryPath $ComRegistrationKey -Name "" `
+        -Value "VIVIDCAM new registration" `
+        -Kind ([Microsoft.Win32.RegistryValueKind]::String)
+    Set-TestRegistryValue -RegistryPath $ComInprocServerKey -Name "" `
+        -Value "C:\new\vividcam.dll" `
+        -Kind ([Microsoft.Win32.RegistryValueKind]::String)
+    Set-TestRegistryValue -RegistryPath $ComInprocServerKey `
+        -Name "ThreadingModel" -Value "Both" `
+        -Kind ([Microsoft.Win32.RegistryValueKind]::String)
+    Restore-VividCamComRegistrationSnapshot `
+        -RegistrationPath $ComRegistrationKey -Snapshot $AbsentSnapshot
+    Assert-Condition -Condition (
+        -not (Test-Path -LiteralPath $ComRegistrationKey)) `
+        -Message "First-install COM rollback left its registration root"
+
+    Remove-TestRoot
+    New-Item -Path $ComInprocServerKey -Force | Out-Null
+    $PriorRootDefault = "%TEMP%\VIVIDCAM prior registration"
+    [byte[]]$PriorRootExtra = @(1, 3, 5, 7)
+    $PriorServerDefault = "%SystemRoot%\VIVIDCAM-prior.dll"
+    [string[]]$PriorInprocExtra = @("preserve-one", "preserve-two")
+    Set-TestRegistryValue -RegistryPath $ComRegistrationKey -Name "" `
+        -Value $PriorRootDefault `
+        -Kind ([Microsoft.Win32.RegistryValueKind]::ExpandString)
+    Set-TestRegistryValue -RegistryPath $ComRegistrationKey -Name "ExtraBinary" `
+        -Value $PriorRootExtra `
+        -Kind ([Microsoft.Win32.RegistryValueKind]::Binary)
+    Set-TestRegistryValue -RegistryPath $ComInprocServerKey -Name "" `
+        -Value $PriorServerDefault `
+        -Kind ([Microsoft.Win32.RegistryValueKind]::ExpandString)
+    Set-TestRegistryValue -RegistryPath $ComInprocServerKey `
+        -Name "ThreadingModel" -Value ([Int32]7) `
+        -Kind ([Microsoft.Win32.RegistryValueKind]::DWord)
+    Set-TestRegistryValue -RegistryPath $ComInprocServerKey -Name "ExtraMulti" `
+        -Value $PriorInprocExtra `
+        -Kind ([Microsoft.Win32.RegistryValueKind]::MultiString)
+    $ExtraSubkey = Join-Path $ComRegistrationKey "ExternalChild"
+    New-Item -Path $ExtraSubkey -Force | Out-Null
+    Set-TestRegistryValue -RegistryPath $ExtraSubkey -Name "Sentinel" `
+        -Value "preserve" `
+        -Kind ([Microsoft.Win32.RegistryValueKind]::String)
+
+    $ExistingSnapshot = Get-VividCamComRegistrationSnapshot `
+        -RegistrationPath $ComRegistrationKey
+    Set-TestRegistryValue -RegistryPath $ComRegistrationKey -Name "" `
+        -Value "VIVIDCAM replacement" `
+        -Kind ([Microsoft.Win32.RegistryValueKind]::String)
+    Set-TestRegistryValue -RegistryPath $ComInprocServerKey -Name "" `
+        -Value "C:\replacement\vividcam.dll" `
+        -Kind ([Microsoft.Win32.RegistryValueKind]::String)
+    Set-TestRegistryValue -RegistryPath $ComInprocServerKey `
+        -Name "ThreadingModel" -Value "Both" `
+        -Kind ([Microsoft.Win32.RegistryValueKind]::String)
+    Restore-VividCamComRegistrationSnapshot `
+        -RegistrationPath $ComRegistrationKey -Snapshot $ExistingSnapshot
+    Assert-Condition -Condition (Test-VividCamComRegistrationSnapshot `
+            -RegistrationPath $ComRegistrationKey `
+            -ExpectedSnapshot $ExistingSnapshot) `
+        -Message "Existing COM registration did not round-trip exactly"
+    Assert-TestRegistryValue -RegistryPath $ComRegistrationKey `
+        -Name "ExtraBinary" -ExpectedValue $PriorRootExtra `
+        -ExpectedKind ([Microsoft.Win32.RegistryValueKind]::Binary) `
+        -Label "Existing COM root extra value"
+    Assert-TestRegistryValue -RegistryPath $ComInprocServerKey `
+        -Name "ExtraMulti" -ExpectedValue $PriorInprocExtra `
+        -ExpectedKind ([Microsoft.Win32.RegistryValueKind]::MultiString) `
+        -Label "Existing COM inproc extra value"
+    Assert-TestRegistryValue -RegistryPath $ExtraSubkey -Name "Sentinel" `
+        -ExpectedValue "preserve" `
+        -ExpectedKind ([Microsoft.Win32.RegistryValueKind]::String) `
+        -Label "Existing COM extra subkey"
+
+    Remove-TestRoot
+    New-Item -Path $ComRegistrationKey -Force | Out-Null
+    Set-TestRegistryValue -RegistryPath $ComRegistrationKey -Name "Sentinel" `
+        -Value "preserve" `
+        -Kind ([Microsoft.Win32.RegistryValueKind]::String)
+    $MissingInprocSnapshot = Get-VividCamComRegistrationSnapshot `
+        -RegistrationPath $ComRegistrationKey
+    New-Item -Path $ComInprocServerKey -Force | Out-Null
+    Set-TestRegistryValue -RegistryPath $ComInprocServerKey -Name "" `
+        -Value "C:\new\vividcam.dll" `
+        -Kind ([Microsoft.Win32.RegistryValueKind]::String)
+    Restore-VividCamComRegistrationSnapshot `
+        -RegistrationPath $ComRegistrationKey `
+        -Snapshot $MissingInprocSnapshot
+    Assert-Condition -Condition (
+        -not (Test-Path -LiteralPath $ComInprocServerKey)) `
+        -Message "COM rollback retained a newly created InprocServer32 key"
+    Assert-TestRegistryValue -RegistryPath $ComRegistrationKey `
+        -Name "Sentinel" -ExpectedValue "preserve" `
+        -ExpectedKind ([Microsoft.Win32.RegistryValueKind]::String) `
+        -Label "Existing COM root sentinel"
+}
+
 try {
     Assert-Condition -Condition (-not (Test-Path -LiteralPath $TestRoot)) `
         -Message "Unique registry test root already exists"
+
+    Test-ComRegistrationSnapshotRoundTrip
+    Remove-TestRoot
 
     $CreatedPaths = [System.Collections.Generic.List[string]]::new()
     New-RegistryKeyPath -RegistryPath $ManifestKey -CreatedPaths $CreatedPaths
