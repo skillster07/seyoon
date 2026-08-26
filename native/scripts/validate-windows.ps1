@@ -53,7 +53,7 @@ function Test-ProducerIdentityManifestSecurity {
         $Allow = [Security.AccessControl.AccessControlType]::Allow
         $NoInheritance = [Security.AccessControl.InheritanceFlags]::None
         $NoPropagation = [Security.AccessControl.PropagationFlags]::None
-        $Security = Get-Acl -LiteralPath $ManifestPath
+        $Security = Get-Acl -Path $ManifestPath
         if (-not $Security.AreAccessRulesProtected) { return $false }
         $OwnerSid = ([Security.Principal.NTAccount]$Security.Owner).Translate(
             [Security.Principal.SecurityIdentifier])

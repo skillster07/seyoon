@@ -1,4 +1,11 @@
 $ErrorActionPreference = "Stop"
+if ($PSVersionTable.PSEdition -eq "Desktop") {
+    $SystemDirectory = [Environment]::GetFolderPath(
+        [Environment+SpecialFolder]::System)
+    $env:PSModulePath = Join-Path $SystemDirectory `
+        "WindowsPowerShell\v1.0\Modules"
+}
+Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
 
 $InstallerPath = Join-Path $PSScriptRoot "install-virtual-camera.ps1"
 $Tokens = $null
@@ -7,6 +14,15 @@ $InstallerAst = [System.Management.Automation.Language.Parser]::ParseFile(
     $InstallerPath, [ref]$Tokens, [ref]$ParserErrors)
 if ($ParserErrors.Count -ne 0) {
     throw "Installer script did not parse: $($ParserErrors[0].Message)"
+}
+
+$ValidatorPath = Join-Path $PSScriptRoot "validate-windows.ps1"
+$ValidatorTokens = $null
+$ValidatorParserErrors = $null
+$ValidatorAst = [System.Management.Automation.Language.Parser]::ParseFile(
+    $ValidatorPath, [ref]$ValidatorTokens, [ref]$ValidatorParserErrors)
+if ($ValidatorParserErrors.Count -ne 0) {
+    throw "Validator script did not parse: $($ValidatorParserErrors[0].Message)"
 }
 
 foreach ($FunctionName in @(
@@ -27,6 +43,34 @@ function Assert-Condition {
     if (-not $Condition) { throw $Message }
 }
 
+function Assert-NoLiteralRegistryGetAcl {
+    param($ScriptAst, [string]$ScriptLabel)
+
+    $InvalidCommands = @($ScriptAst.FindAll({
+        param($Node)
+        if ($Node -isnot [System.Management.Automation.Language.CommandAst] -or
+            $Node.GetCommandName() -ne "Get-Acl") {
+            return $false
+        }
+        foreach ($Element in $Node.CommandElements) {
+            if ($Element -is
+                    [System.Management.Automation.Language.CommandParameterAst] -and
+                $Element.ParameterName -eq "LiteralPath") {
+                return $true
+            }
+        }
+        return $false
+    }, $true))
+    Assert-Condition -Condition ($InvalidCommands.Count -eq 0) `
+        -Message ("$ScriptLabel uses Get-Acl -LiteralPath, which reports " +
+                  "existing registry keys as missing in Windows PowerShell 5.1")
+}
+
+Assert-NoLiteralRegistryGetAcl -ScriptAst $InstallerAst `
+    -ScriptLabel "Installer"
+Assert-NoLiteralRegistryGetAcl -ScriptAst $ValidatorAst `
+    -ScriptLabel "Validator"
+
 $TestRoot = "HKCU:\Software\VIVIDCAMInstallerRegistryTest_$((
     [Guid]::NewGuid()).ToString('N'))"
 $VirtualCameraKey = Join-Path $TestRoot "VirtualCamera"
@@ -46,6 +90,9 @@ try {
     New-RegistryKeyPath -RegistryPath $ManifestKey -CreatedPaths $CreatedPaths
     Assert-Condition -Condition (Test-Path -LiteralPath $ManifestKey) `
         -Message "First-install hierarchy did not reach the manifest key"
+    $ManifestAcl = Get-Acl -Path $ManifestKey
+    Assert-Condition -Condition ($null -ne $ManifestAcl) `
+        -Message "Windows PowerShell 5.1 could not read the registry key ACL"
     Assert-Condition -Condition ($CreatedPaths.Count -eq 3) `
         -Message "First-install hierarchy did not track exactly three new keys"
     Remove-Item -LiteralPath $ManifestKey -Force

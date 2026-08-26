@@ -204,7 +204,7 @@ function Get-ProducerIdentityManifestSnapshot {
             Value = $Value
         }
     }
-    $Acl = Get-Acl -LiteralPath $ManifestPath
+    $Acl = Get-Acl -Path $ManifestPath
     [byte[]]$SecurityDescriptor = $Acl.GetSecurityDescriptorBinaryForm()
     return [pscustomobject]@{
         Exists = $true
@@ -290,7 +290,7 @@ function Test-ProducerIdentityManifestSecurity {
         [Security.AccessControl.RegistryRights]::ReadPermissions
     $Allow = [Security.AccessControl.AccessControlType]::Allow
 
-    $AppliedSecurity = Get-Acl -LiteralPath $ManifestPath
+    $AppliedSecurity = Get-Acl -Path $ManifestPath
     if (-not $AppliedSecurity.AreAccessRulesProtected) { return $false }
     $OwnerSid = ([Security.Principal.NTAccount]$AppliedSecurity.Owner).Translate(
         [Security.Principal.SecurityIdentifier])
@@ -460,7 +460,7 @@ function Set-ProducerIdentityManifest {
     $SystemOwnerApplied = $false
     try {
         Set-Acl -LiteralPath $ManifestPath -AclObject $Security
-        $SystemOwnerAcl = Get-Acl -LiteralPath $ManifestPath
+        $SystemOwnerAcl = Get-Acl -Path $ManifestPath
         $SystemOwnerActual =
             ([Security.Principal.NTAccount]$SystemOwnerAcl.Owner).Translate(
                 [Security.Principal.SecurityIdentifier])
