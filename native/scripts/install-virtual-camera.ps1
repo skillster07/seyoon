@@ -129,6 +129,52 @@ function Test-RegistryValueDataEqual {
     return [object]::Equals($Left, $Right)
 }
 
+function New-RegistryKeyPath {
+    param(
+        [string]$RegistryPath,
+        [System.Collections.Generic.List[string]]$CreatedPaths
+    )
+
+    $Qualifier = Split-Path -Path $RegistryPath -Qualifier
+    $RelativePath = Split-Path -Path $RegistryPath -NoQualifier
+    if ([string]::IsNullOrWhiteSpace($Qualifier) -or
+        [string]::IsNullOrWhiteSpace($RelativePath)) {
+        throw "Invalid registry path: $RegistryPath"
+    }
+
+    $CurrentPath = $Qualifier
+    foreach ($Component in $RelativePath.TrimStart('\').Split('\')) {
+        if ([string]::IsNullOrWhiteSpace($Component)) { continue }
+        $CurrentPath = Join-Path $CurrentPath $Component
+        if (Test-Path -LiteralPath $CurrentPath) { continue }
+
+        New-Item -Path $CurrentPath -Force | Out-Null
+        if (-not (Test-Path -LiteralPath $CurrentPath)) {
+            throw "Could not create registry key: $CurrentPath"
+        }
+        [void]$CreatedPaths.Add($CurrentPath)
+    }
+}
+
+function Remove-EmptyCreatedRegistryKeyPaths {
+    param([System.Collections.Generic.List[string]]$CreatedPaths)
+
+    for ($Index = $CreatedPaths.Count - 1; $Index -ge 0; --$Index) {
+        $RegistryPath = $CreatedPaths[$Index]
+        if (-not (Test-Path -LiteralPath $RegistryPath)) { continue }
+
+        $RegistryKey = Get-Item -LiteralPath $RegistryPath
+        if (@($RegistryKey.GetValueNames()).Count -ne 0 -or
+            @($RegistryKey.GetSubKeyNames()).Count -ne 0) {
+            continue
+        }
+        Remove-Item -LiteralPath $RegistryPath -Force
+        if (Test-Path -LiteralPath $RegistryPath) {
+            throw "Could not remove newly created empty registry key: $RegistryPath"
+        }
+    }
+}
+
 function Get-ProducerIdentityManifestSnapshot {
     param([string]$ManifestPath)
 
@@ -666,6 +712,8 @@ if ($AllUsers) {
     $CleanupErrors = @()
     $RestartFailure = $null
     $TransactionCommitted = $false
+    $CreatedProducerIdentityRegistryKeys =
+        [System.Collections.Generic.List[string]]::new()
     try {
         foreach ($Deployment in $Deployments) {
             if (-not $Deployment.NeedsUpdate) { continue }
@@ -693,6 +741,9 @@ if ($AllUsers) {
         }
 
         [byte[]]$EngineSha256 = Convert-HexToBytes $BuildEngineHash
+        New-RegistryKeyPath `
+            -RegistryPath $ProducerIdentityKey `
+            -CreatedPaths $CreatedProducerIdentityRegistryKeys
         Set-ProducerIdentityManifest `
             -ManifestPath $ProducerIdentityKey `
             -Generation $ManifestGeneration `
@@ -733,6 +784,13 @@ if ($AllUsers) {
         } catch {
             $RollbackErrors +=
                 "Producer identity manifest rollback failed: $($_.Exception.Message)"
+        }
+        try {
+            Remove-EmptyCreatedRegistryKeyPaths `
+                -CreatedPaths $CreatedProducerIdentityRegistryKeys
+        } catch {
+            $RollbackErrors +=
+                "Producer identity registry cleanup failed: $($_.Exception.Message)"
         }
         foreach ($Deployment in $Deployments) {
             try {

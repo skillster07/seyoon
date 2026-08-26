@@ -170,6 +170,12 @@ if(VIVIDCAM_BUILD_TESTS)
       COMMAND vividcam_control_channel_transport_tests)
     set_tests_properties(vividcam_control_channel_transport_tests PROPERTIES
       TIMEOUT 20)
+
+    add_test(NAME vividcam_install_registry_helpers
+      COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+              -File ${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-install-registry-helpers.ps1)
+    set_tests_properties(vividcam_install_registry_helpers PROPERTIES
+      TIMEOUT 20)
   endif()
 
   add_test(NAME vividcam_engine_bounded_smoke
