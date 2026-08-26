@@ -35,6 +35,7 @@
 - VCIP 1.0 compact stream/transport negotiation codec과 cross-message exact-contract validation
 - 1920×1080 NV12 60/1p 고정 두 슬롯 CPU latest-frame `Local\`/`Global\` shared-memory core
 - 단일-writer CAS claim, exact production DACL·Medium/no-write-up label과 덮어쓰기·torn·invalid 계측
+- 인증된 control session의 stream 협상, connection별 mailbox 생성·open·stale·재연결·종료 수명주기
 - RGBA 이미지·텍스트 스타일 리소스 저장소와 GPU 결과 비교용 색상/이미지 CPU 참조 합성기
 - 플랫폼 진단 CLI
 - 플랫폼 독립 코어 단위 테스트
@@ -55,10 +56,17 @@ protocol error·rejected peer 없이 통과했습니다.
 
 W4b-2b 첫 slice의 compact negotiation codec과 CPU mailbox core는 **Windows Release CTest
 10/10**, mailbox 5회 반복, WSL GCC `-Werror` CPU/protocol 및 cross-process latest-frame
-test를 통과했습니다. 하지만 control negotiation/lifecycle, engine render/readback publisher,
-MF `RequestSample` consumer/fallback과 설치된 Frame Server data plane은 아직 연결되지
-않았습니다. 현재 등록 카메라 출력은 계속 컬러바 fallback이며 W4b-2b 전체 gate와 W4b-0
-재부팅 지속성은 남아 있습니다.
+test를 통과했습니다. 이어 control worker에 bounded payload I/O와
+`SourceHello → ProducerHello → OpenStream → TransportOffer → TransportAccepted → StreamReady`
+협상, connection별 mailbox 수명주기를 연결했습니다. source가 mapping을 만들고 engine이
+writer로 연 뒤에만 handshake 성공을 기록하며, stale 시 gated source read 경로를 중단했다가
+검증된 heartbeat가 돌아오면 복구합니다. 이번 변경은 Windows CTest 10/10, control transport 5/5,
+mailbox 3/3과 3,110,400-byte NV12 결정적 roundtrip·wrong-order 거부를 통과했습니다.
+
+engine render/readback publisher와 MF `RequestSample` consumer/fallback은 아직 연결하지
+않았습니다. 따라서 현재 등록 카메라 출력은 계속 컬러바 fallback이며, 설치된 실제 Frame
+Server의 `Global\` cross-session mapping과 W4b-2b 전체 gate, W4b-0 재부팅 지속성은 남아
+있습니다.
 
 ## Linux/macOS 공통 코어 검증
 
@@ -152,9 +160,25 @@ $engine = Join-Path $env:ProgramFiles "VIVIDCAM\VirtualCamera\vividcam_engine.ex
 
 인자 없이 실행하면 Ctrl+C를 받을 때까지 계속 실행하고,
 `--run-for-ms`는 CI와 smoke 검증을 위한 제한 실행입니다. 각 상태 행의
-`[engine-control]` 행은 W4b-2a control worker의 연결·handshake·heartbeat 카운터입니다.
-`frame_transport=unavailable`은 control 연결과 별개로 실제 영상 프레임 transport가 아직
-연결되지 않았다는 뜻입니다.
+`[engine-control]` 행은 control worker의 연결·handshake·heartbeat 카운터입니다. 현재
+`successful_handshakes`는 `StreamReady`와 양쪽 mailbox publication이 끝난 뒤에만
+증가합니다. `[engine] frame_transport=ready`는 negotiated mailbox가 열렸다는 뜻이며 실제
+합성 frame이 게시·소비됐다는 뜻은 아닙니다. mailbox가 없으면 `unavailable`로 돌아갑니다.
+
+설치된 production data plane은 관리자 PowerShell의 전체 검증·재설치가 끝난 뒤, 같은 active
+console 계정의 **일반 사용자 PowerShell 두 개**에서 확인합니다. 첫 번째 창에서 위 engine을
+실행하고 두 번째 창에서 다음 명령을 실행한 뒤 engine을 Ctrl+C로 종료합니다.
+
+```powershell
+$diag = Join-Path $env:ProgramFiles "VIVIDCAM\VirtualCamera\vividcam_diagnostics.exe"
+& $diag --registered-source-test
+```
+
+통과 기준은 `[registered-source] ... samples=12 ... [valid]`,
+`successful_handshakes >= 1`, `heartbeats_sent == heartbeat_acks`,
+`protocol_errors=0`, `rejected_peers=0`입니다. 12-frame 진단이 첫 500ms heartbeat 전에
+끝나면 heartbeat `0/0`도 정상입니다. 이 로컬 `Global\` gate는 아직 실행 결과를 받지
+않았으므로 자동 검증 통과와 구분해 대기로 기록합니다.
 
 canonical production route는 SYSTEM과 `NT SERVICE\FrameServer` SID만 pipe에
 접속시킵니다. 따라서 예전에 사용한 일반 사용자 진단 명령은 더 이상 production 성공
@@ -208,9 +232,19 @@ synchronized frame과 consumer 대기 없는 140개 burst를 게시해 정확한
 overwrite 발생과 torn/invalid 0을 검증했습니다. 자세한 결과는
 `docs/validation/WINDOWS_W4B2B_CPU_FRAME_TRANSPORT_2026-08-26.md`에 기록합니다.
 
-이 mailbox는 아직 engine과 Media Foundation source에서 호출하지 않습니다. 따라서 위
-자동 검증은 실제 Frame Server `Global\` cross-session mapping이나 합성 영상 수신을
-증명하지 않으며, `frame_transport=unavailable` 상태가 정상입니다.
+control worker는 source에서 connection별 mailbox를 만들고 engine에서 같은 이름을 열며,
+현재 session에 묶인 publish/take API만 외부에 제공합니다. raw mailbox handle은 노출하지
+않습니다. disconnect·reconnect·stop에서 양쪽 handle을 닫고 reconnect는 새 connection ID와
+새 이름을 사용합니다. source heartbeat가 stale이면 consumer read 경로를 일시 중단하고
+producer identity를 다시 검증한
+heartbeat 뒤 복구합니다.
+
+그러나 engine renderer는 아직 `publish_cpu_frame`으로 frame을 게시하지 않고 Media
+Foundation stream도 `take_latest_cpu_frame`에서 frame을 consume하지 않습니다. 따라서
+`frame_transport=ready` 상태에서도 등록 카메라가 기존 컬러바를 반환하는 것이 정상입니다.
+자동 검증은 control·mailbox lifecycle을 증명하지만 실제 Frame Server `Global\`
+cross-session open이나 합성 영상 수신을 대신하지 않습니다. 상세 결과는
+`docs/validation/WINDOWS_W4B2B_CONTROL_MAILBOX_LIFECYCLE_2026-08-26.md`에 기록합니다.
 
 현재 신뢰 경계는 Program Files와 HKLM을 변경할 수 있는 관리자까지 포함합니다. 같은 사용자
 권한의 runtime code injection·process hollowing은 범위 밖이고, 예측 가능한 canonical pipe를
@@ -222,9 +256,9 @@ RDP·복수 동시 세션은 후속 범위입니다. 배포 서명 이후 Authen
 
 1. Windows 재부팅 후 영구 등록 장치 유지와 W4b-0 재수신
 2. active console 계정으로 새 producer identity manifest를 elevated 설치한 실제 Frame Server handshake·heartbeat 확인 — 완료
-3. CPU latest-frame IPC core — codec·mailbox 자동 검증 완료; control lifecycle, engine
-   publisher, MF consumer/fallback과 실제 합성 프레임 전달 진행 예정
-4. 설치된 Frame Server의 `Global\` mapping과 producer/source 재시작·재연결 검증
+3. CPU latest-frame IPC — codec·mailbox·control lifecycle 자동 검증 완료; engine
+   render/readback publisher, MF consumer/fallback과 실제 합성 프레임 전달 진행 예정
+4. 설치된 Frame Server의 `Global\` mapping과 producer/source 재시작·재연결 로컬 검증
 5. D3D11 공유 텍스처 IPC와 CPU fallback
 6. 네이티브 1920×1080 60 FPS 입력 소스로 W1~W3 재검증
 7. OBS·SOOP·TikTok LIVE Studio 장치 인식과 실제 영상 수신 W4b

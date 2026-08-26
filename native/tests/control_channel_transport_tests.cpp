@@ -1,4 +1,6 @@
 #include "vividcam/control_channel_transport.hpp"
+#include "vividcam/cpu_frame_transport.hpp"
+#include "vividcam/producer_ipc_protocol.hpp"
 
 #include <algorithm>
 #include <array>
@@ -36,6 +38,41 @@ bool wait_until(Predicate predicate, std::chrono::milliseconds timeout) {
 }
 
 #ifdef _WIN32
+vividcam::CpuNv12Frame deterministic_nv12_frame(std::uint64_t sequence,
+                                                std::uint8_t value) {
+  vividcam::CpuNv12Frame frame;
+  frame.sequence = sequence;
+  frame.timestamp_100ns = static_cast<std::int64_t>(sequence * 166'667U);
+  frame.bytes.assign(vividcam::kCpuFrameNv12Bytes, value);
+  assert(frame.valid());
+  return frame;
+}
+
+void assert_mailbox_round_trip(
+    vividcam::ProducerControlServer& producer,
+    vividcam::SourceControlClient& source,
+    std::uint64_t sequence, std::uint8_t value) {
+  assert(producer.frame_mailbox_snapshot().open);
+  assert(source.frame_mailbox_snapshot().open);
+  assert(producer.frame_mailbox_name() == source.frame_mailbox_name());
+
+  const auto expected = deterministic_nv12_frame(sequence, value);
+  std::string error;
+  assert(producer.publish_cpu_frame(expected, error));
+  assert(error.empty());
+  const auto actual = source.take_latest_cpu_frame(error);
+  assert(actual);
+  assert(error.empty());
+  assert(actual->valid());
+  assert(actual->sequence == expected.sequence);
+  assert(actual->timestamp_100ns == expected.timestamp_100ns);
+  assert(actual->width == expected.width);
+  assert(actual->height == expected.height);
+  assert(actual->y_stride_bytes == expected.y_stride_bytes);
+  assert(actual->uv_stride_bytes == expected.uv_stride_bytes);
+  assert(actual->bytes == expected.bytes);
+}
+
 struct KernelObjectAccessSummary {
   ACCESS_MASK allowed{0};
   ACCESS_MASK denied{0};
@@ -170,6 +207,102 @@ bool send_wrong_magic_header(std::wstring_view pipe_name,
   }
   return false;
 }
+
+bool send_out_of_order_heartbeat_after_hello(
+    std::wstring_view pipe_name, std::chrono::milliseconds timeout) {
+  using vividcam::producer_ipc::MessageHeader;
+  using vividcam::producer_ipc::MessageType;
+  const std::wstring owned_pipe_name(pipe_name);
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    const DWORD flags = SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION;
+    const HANDLE pipe = CreateFileW(
+        owned_pipe_name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+        OPEN_EXISTING, flags, nullptr);
+    if (pipe == INVALID_HANDLE_VALUE) {
+      const DWORD status = GetLastError();
+      if (status != ERROR_FILE_NOT_FOUND && status != ERROR_PIPE_BUSY) {
+        return false;
+      }
+      std::this_thread::sleep_for(10ms);
+      continue;
+    }
+
+    MessageHeader source_hello;
+    source_hello.message_type = MessageType::SourceHello;
+    source_hello.message_sequence = 1;
+    for (std::size_t index = 0; index < source_hello.connection_id.size();
+         ++index) {
+      source_hello.connection_id[index] =
+          static_cast<std::uint8_t>(0x41U + index);
+    }
+    std::vector<std::byte> encoded;
+    if (vividcam::producer_ipc::encode_message(source_hello, {}, encoded) !=
+        vividcam::producer_ipc::ProtocolError::None) {
+      CloseHandle(pipe);
+      return false;
+    }
+    DWORD written = 0;
+    if (!WriteFile(pipe, encoded.data(), static_cast<DWORD>(encoded.size()),
+                   &written, nullptr) ||
+        written != encoded.size()) {
+      CloseHandle(pipe);
+      return false;
+    }
+
+    DWORD available = 0;
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (!PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr)) {
+        CloseHandle(pipe);
+        return false;
+      }
+      if (available >= vividcam::producer_ipc::kHeaderBytes) break;
+      std::this_thread::sleep_for(5ms);
+    }
+    if (available < vividcam::producer_ipc::kHeaderBytes) {
+      CloseHandle(pipe);
+      return false;
+    }
+
+    std::array<std::byte, vividcam::producer_ipc::kHeaderBytes> hello_bytes{};
+    DWORD read = 0;
+    if (!ReadFile(pipe, hello_bytes.data(),
+                  static_cast<DWORD>(hello_bytes.size()), &read, nullptr) ||
+        read != hello_bytes.size()) {
+      CloseHandle(pipe);
+      return false;
+    }
+    MessageHeader producer_hello;
+    if (vividcam::producer_ipc::decode_header(hello_bytes, producer_hello) !=
+            vividcam::producer_ipc::ProtocolError::None ||
+        producer_hello.message_type != MessageType::ProducerHello ||
+        producer_hello.message_sequence != 1 ||
+        producer_hello.correlation_id != source_hello.message_sequence ||
+        producer_hello.connection_id != source_hello.connection_id) {
+      CloseHandle(pipe);
+      return false;
+    }
+
+    MessageHeader out_of_order;
+    out_of_order.message_type = MessageType::Heartbeat;
+    out_of_order.message_sequence = 2;
+    out_of_order.connection_id = source_hello.connection_id;
+    encoded.clear();
+    if (vividcam::producer_ipc::encode_message(out_of_order, {}, encoded) !=
+        vividcam::producer_ipc::ProtocolError::None) {
+      CloseHandle(pipe);
+      return false;
+    }
+    written = 0;
+    const bool sent =
+        WriteFile(pipe, encoded.data(), static_cast<DWORD>(encoded.size()),
+                  &written, nullptr) != FALSE &&
+        written == encoded.size();
+    CloseHandle(pipe);
+    return sent;
+  }
+  return false;
+}
 #endif
 
 } // namespace
@@ -266,15 +399,22 @@ int main() {
     assert(send_wrong_magic_header(pipe_name, 1s));
     assert(wait_until(
         [&] { return server.snapshot().protocol_errors >= 1; }, 1s));
+    assert(!server.frame_mailbox_snapshot().open);
+    assert(send_out_of_order_heartbeat_after_hello(pipe_name, 1s));
+    assert(wait_until(
+        [&] { return server.snapshot().protocol_errors >= 2; }, 1s));
+    assert(!server.frame_mailbox_snapshot().open);
     assert(client.start(route, error));
     const bool loopback_ready = wait_until(
         [&] {
           const auto server_status = server.snapshot();
           const auto client_status = client.snapshot();
           return server_status.connected && client_status.connected &&
-                 server_status.successful_handshakes >= 1 &&
-                 client_status.successful_handshakes >= 1 &&
-                 server_status.heartbeat_acks >= 2;
+                  server_status.successful_handshakes >= 1 &&
+                  client_status.successful_handshakes >= 1 &&
+                  server.frame_mailbox_snapshot().open &&
+                  client.frame_mailbox_snapshot().open &&
+                  server_status.heartbeat_acks >= 2;
         },
         4s);
     if (!loopback_ready) {
@@ -304,9 +444,11 @@ int main() {
     assert(server_status.heartbeats_sent >= 2);
     assert(server_status.heartbeat_acks >= 2);
     assert(client_status.heartbeat_acks >= 2);
-    assert(server_status.protocol_errors == 1);
+    assert(server_status.protocol_errors == 2);
     assert(client_status.protocol_errors == 0);
     assert(server_status.rejected_peers == 0);
+
+    assert_mailbox_round_trip(server, client, 101, 0x5a);
 
     const auto stop_started = std::chrono::steady_clock::now();
     client.stop();
@@ -314,6 +456,10 @@ int main() {
     assert(std::chrono::steady_clock::now() - stop_started < 2s);
     assert(!client.snapshot().running);
     assert(!server.snapshot().running);
+    assert(!client.frame_mailbox_snapshot().open);
+    assert(!server.frame_mailbox_snapshot().open);
+    assert(client.frame_mailbox_name().empty());
+    assert(server.frame_mailbox_name().empty());
     client.stop();
     server.stop();
   }
@@ -331,36 +477,54 @@ int main() {
     assert(wait_until(
         [&] {
           return client.snapshot().successful_handshakes >= 1 &&
-                 server.snapshot().successful_handshakes >= 1;
+                 server.snapshot().successful_handshakes >= 1 &&
+                 client.frame_mailbox_snapshot().open &&
+                 server.frame_mailbox_snapshot().open;
         },
         3s));
+    const std::wstring first_mailbox_name = client.frame_mailbox_name();
+    assert(!first_mailbox_name.empty());
+    assert(first_mailbox_name == server.frame_mailbox_name());
+    assert_mailbox_round_trip(server, client, 201, 0x33);
     const auto attempts_before_stop = client.snapshot().connection_attempts;
 
     server.stop();
+    assert(!server.frame_mailbox_snapshot().open);
     assert(wait_until(
         [&] {
           const auto status = client.snapshot();
           return !status.connected &&
-                 status.connection_attempts > attempts_before_stop;
+                 status.connection_attempts > attempts_before_stop &&
+                 !client.frame_mailbox_snapshot().open;
         },
         2s));
+    assert(client.frame_mailbox_name().empty());
 
     assert(server.start(reconnect_route, "restarted-engine", error));
     assert(wait_until(
         [&] {
           return client.snapshot().successful_handshakes >= 2 &&
                  server.snapshot().successful_handshakes >= 1 &&
-                 server.snapshot().heartbeat_acks >= 1;
+                 server.snapshot().heartbeat_acks >= 1 &&
+                 client.frame_mailbox_snapshot().open &&
+                 server.frame_mailbox_snapshot().open;
         },
         3s));
     assert(client.snapshot().protocol_errors == 0);
     assert(server.snapshot().protocol_errors == 0);
     assert(server.snapshot().rejected_peers == 0);
+    const std::wstring second_mailbox_name = client.frame_mailbox_name();
+    assert(!second_mailbox_name.empty());
+    assert(second_mailbox_name == server.frame_mailbox_name());
+    assert(second_mailbox_name != first_mailbox_name);
+    assert_mailbox_round_trip(server, client, 202, 0xc7);
 
     const auto stop_started = std::chrono::steady_clock::now();
     client.stop();
     server.stop();
     assert(std::chrono::steady_clock::now() - stop_started < 2s);
+    assert(!client.frame_mailbox_snapshot().open);
+    assert(!server.frame_mailbox_snapshot().open);
   }
 
   {
@@ -404,6 +568,8 @@ int main() {
     assert(!unexpected_failure.load(std::memory_order_relaxed));
     assert(!client.snapshot().running);
     assert(!server.snapshot().running);
+    assert(!client.frame_mailbox_snapshot().open);
+    assert(!server.frame_mailbox_snapshot().open);
   }
 
   const auto repeated_query_grants = inspect_engine_query_grants();
