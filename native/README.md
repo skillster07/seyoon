@@ -32,11 +32,33 @@
 - 64-byte little-endian versioned control protocol, strict decoder와 안정 메시지 ID
 - 설치된 producer image에 결합된 Windows named-pipe control, cross-process heartbeat·재연결·취소 가능한 종료
 - `Program Files` 엔진 경로·SHA-256·설치 사용자 SID를 고정하는 보호된 HKLM producer identity manifest
+- VCIP 1.0 compact stream/transport negotiation codec과 cross-message exact-contract validation
+- 1920×1080 NV12 60/1p 고정 두 슬롯 CPU latest-frame `Local\`/`Global\` shared-memory core
+- 단일-writer CAS claim, exact production DACL·Medium/no-write-up label과 덮어쓰기·torn·invalid 계측
 - RGBA 이미지·텍스트 스타일 리소스 저장소와 GPU 결과 비교용 색상/이미지 CPU 참조 합성기
 - 플랫폼 진단 CLI
 - 플랫폼 독립 코어 단위 테스트
 
-현재 Windows 구현은 **1080p60 포맷 협상, 비동기 프레임 수신, D3D11·DXGI surface 전달, 단일 카메라 합성, W4a 등록, W4b-0 테스트 패턴, W4b-1 엔진 호스트와 W4b-2a control IPC·producer identity binding 단계**입니다. 2026-08-26 로컬에서 W1 최선 60 FPS 입력, W2 GPU surface, W3 1080p60 오프스크린 합성·NV12 변환과 W4a COM activation·등록 수명주기가 통과했습니다. W4b-0 영구 등록 장치도 실제 Frame Server consumer에서 1920×1080 NV12 60p 이동 컬러바 12개를 전달했습니다. W4b-1 엔진은 일반 사용자 권한에서 생명주기, heartbeat, 제한 시간과 Ctrl+C 종료가 통과했습니다. 기본 W4b-2a는 Windows loopback과 설치 DLL의 실제 Frame Server LocalService handshake 1회·heartbeat ACK 69/69를 오류 없이 통과했습니다. 그 뒤 추가한 producer identity binding은 Windows Release 빌드, **Windows CTest 9/9**, control transport 5회 반복 및 Web production build를 통과했습니다. Windows 전용 helper tests는 첫 설치의 레지스트리 계층 생성·롤백, PowerShell 5.1 ACL·Registry64 쓰기 호환성과 함께, 실제 서비스를 건드리지 않고 persistent camera stop/re-enable 및 FrameServer-only update 정책을 검증합니다. elevated `validate-windows.ps1`가 generation 1 package 설치·재검증과 등록 source 1920×1080 NV12 60p 샘플 12개 수신을 통과했고, 설치된 일반 사용자 엔진과 실제 Frame Server도 handshake 1회·heartbeat ACK 147/147을 protocol error·rejected peer 없이 통과했습니다. 다음 구현은 CPU latest-frame producer bridge이며 W4b-0 재부팅 지속성도 아직 남아 있습니다.
+현재 Windows 구현은 **1080p60 포맷 협상, 비동기 프레임 수신, D3D11·DXGI surface 전달,
+단일 카메라 합성, W4a 등록, W4b-0 테스트 패턴, W4b-1 엔진 호스트, W4b-2a control
+IPC·producer identity binding과 W4b-2b CPU transport core 단계**입니다. 2026-08-26
+로컬에서 W1 최선 60 FPS 입력, W2 GPU surface, W3 1080p60 오프스크린 합성·NV12 변환과
+W4a COM activation·등록 수명주기가 통과했습니다. W4b-0 영구 등록 장치도 실제 Frame
+Server consumer에서 1920×1080 NV12 60p 이동 컬러바 12개를 전달했습니다. W4b-1 엔진은
+일반 사용자 권한에서 생명주기, heartbeat, 제한 시간과 Ctrl+C 종료가 통과했습니다.
+
+기본 W4b-2a는 Windows loopback과 설치 DLL의 실제 Frame Server LocalService handshake
+1회·heartbeat ACK 69/69를 오류 없이 통과했습니다. 뒤이어 producer identity binding의
+Windows CTest 9/9, control transport 5회 반복·Web build와 generation 1 설치를 통과했고,
+설치된 일반 사용자 엔진과 실제 Frame Server도 handshake 1회·heartbeat ACK 147/147을
+protocol error·rejected peer 없이 통과했습니다.
+
+W4b-2b 첫 slice의 compact negotiation codec과 CPU mailbox core는 **Windows Release CTest
+10/10**, mailbox 5회 반복, WSL GCC `-Werror` CPU/protocol 및 cross-process latest-frame
+test를 통과했습니다. 하지만 control negotiation/lifecycle, engine render/readback publisher,
+MF `RequestSample` consumer/fallback과 설치된 Frame Server data plane은 아직 연결되지
+않았습니다. 현재 등록 카메라 출력은 계속 컬러바 fallback이며 W4b-2b 전체 gate와 W4b-0
+재부팅 지속성은 남아 있습니다.
 
 ## Linux/macOS 공통 코어 검증
 
@@ -165,6 +187,31 @@ VCIP wire format은 1.0 그대로이며 producer identity를 위한 secret이나
 경로와 SHA-256을 handshake 전과 매 heartbeat마다 재검증합니다. 세 경로는 handle로 연
 regular non-reparse file이어야 하며 `GetFinalPathNameByHandle` 결과도 같아야 합니다.
 
+W4b-2b의 큰 frame payload는 64 KiB 상한의 control pipe에 넣지 않습니다. VCIP 1.0에는
+`OpenStream` 48-byte, `TransportOffer` 40-byte,
+`TransportAccepted`·`StreamReady` 공용 40-byte descriptor의 compact little-endian codec을
+추가했습니다. 첫 stream 계약은 1920×1080 NV12 60/1p, Y/UV stride 1920, frame bytes
+3,110,400으로 고정합니다.
+
+frame bytes는 source가 생성하고 producer가 여는 별도 두 슬롯 mailbox에 둡니다. header는
+4,096 bytes, page-aligned slot span은 각각 3,112,960 bytes, 전체 mapping은 6,230,016
+bytes입니다. test route는 `Local\`, 설치 runtime은 `Global\` namespace를 사용합니다.
+shared CAS claim으로 writer 하나만 허용하며 producer는 per-frame ACK·queue·backpressure 없이
+inactive slot에 쓰고 최신 generation을 게시합니다. consumer는 bounded snapshot 한 번만
+시도해 torn frame을 기다리지 않습니다.
+
+production mapping의 protected DACL은 SYSTEM·FrameServer `GENERIC_ALL`과 manifest producer
+SID `GENERIC_READ | GENERIC_WRITE`의 direct allow ACE 세 개만 허용하고 exact
+Medium/no-write-up label을 요구합니다. production descriptor를 `Local\`에 적용하는 CI seam은
+정상 경로와 추가 ACE·잘못된 label 거부를 확인했습니다. cross-process test는 16개
+synchronized frame과 consumer 대기 없는 140개 burst를 게시해 정확한 최종 payload,
+overwrite 발생과 torn/invalid 0을 검증했습니다. 자세한 결과는
+`docs/validation/WINDOWS_W4B2B_CPU_FRAME_TRANSPORT_2026-08-26.md`에 기록합니다.
+
+이 mailbox는 아직 engine과 Media Foundation source에서 호출하지 않습니다. 따라서 위
+자동 검증은 실제 Frame Server `Global\` cross-session mapping이나 합성 영상 수신을
+증명하지 않으며, `frame_transport=unavailable` 상태가 정상입니다.
+
 현재 신뢰 경계는 Program Files와 HKLM을 변경할 수 있는 관리자까지 포함합니다. 같은 사용자
 권한의 runtime code injection·process hollowing은 범위 밖이고, 예측 가능한 canonical pipe를
 먼저 만드는 availability DoS도 남아 있습니다. 현재는 물리적 활성 콘솔 세션 하나만 지원하며
@@ -175,11 +222,13 @@ RDP·복수 동시 세션은 후속 범위입니다. 배포 서명 이후 Authen
 
 1. Windows 재부팅 후 영구 등록 장치 유지와 W4b-0 재수신
 2. active console 계정으로 새 producer identity manifest를 elevated 설치한 실제 Frame Server handshake·heartbeat 확인 — 완료
-3. CPU latest-frame IPC와 실제 합성 프레임 전달
-4. D3D11 공유 텍스처 IPC와 CPU fallback
-5. 네이티브 1920×1080 60 FPS 입력 소스로 W1~W3 재검증
-6. OBS·SOOP·TikTok LIVE Studio 장치 인식과 실제 영상 수신 W4b
-7. 앱·엔진·장치 재시작과 분리·재연결 자동 복구
-8. Authenticode signer pin·격리 경계 보강
-9. canonical pipe precreation DoS 완화와 RDP·복수 사용자 세션 지원
-10. 4시간 1080p60 안정성·드롭·CPU·RAM·VRAM 검증
+3. CPU latest-frame IPC core — codec·mailbox 자동 검증 완료; control lifecycle, engine
+   publisher, MF consumer/fallback과 실제 합성 프레임 전달 진행 예정
+4. 설치된 Frame Server의 `Global\` mapping과 producer/source 재시작·재연결 검증
+5. D3D11 공유 텍스처 IPC와 CPU fallback
+6. 네이티브 1920×1080 60 FPS 입력 소스로 W1~W3 재검증
+7. OBS·SOOP·TikTok LIVE Studio 장치 인식과 실제 영상 수신 W4b
+8. 앱·엔진·장치 재시작과 분리·재연결 자동 복구
+9. Authenticode signer pin·격리 경계 보강
+10. canonical pipe precreation DoS 완화와 RDP·복수 사용자 세션 지원
+11. 4시간 1080p60 안정성·드롭·CPU·RAM·VRAM 검증

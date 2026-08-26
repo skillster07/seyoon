@@ -151,6 +151,44 @@ package 검증은 실제 설치 engine ↔ FrameServer handshake·heartbeat 통�
 - 자동 게이트 뒤 관리자 재설치, 설치된 엔진의 일반 사용자 실행, 실제 FrameServer
   handshake·heartbeat를 확인해야 로컬 설치 통합 항목 완료
 
+### Gate W4b-2b — CPU latest-frame 데이터 평면 (진행 중)
+
+현재는 negotiation codec과 독립 shared-memory mailbox의 **transport core 자동 검증만
+완료**했습니다. 아래 control·engine·Media Foundation 통합 및 설치된 Frame Server 검증이
+남아 있으므로 Gate W4b-2b 전체를 완료로 판정하지 않습니다.
+
+transport core 통과 항목:
+
+- VCIP 1.0의 기존 64-byte header·64 KiB payload 상한은 유지하고 frame bytes는 control
+  pipe에 싣지 않음
+- `OpenStream` 48-byte, `TransportOffer` 40-byte,
+  `TransportAccepted`·`StreamReady` 공용 descriptor 40-byte compact little-endian codec과
+  payload 간 exact-contract validation 통과
+- 첫 transport 계약을 1920×1080 NV12 60/1p, Y/UV stride 1920, frame bytes
+  3,110,400으로 고정
+- source가 만들고 engine producer가 여는 두 슬롯 latest-frame mailbox 구현:
+  4,096-byte header, 3,112,960-byte slot span, 전체 6,230,016 bytes
+- 비production test는 `Local\`, 설치 runtime은 cross-session `Global\` object name 사용
+- shared CAS writer claim으로 단일 producer만 허용하고 per-frame ACK·queue·backpressure 없이
+  최신 frame이 이전 frame을 덮어씀
+- source는 한 번의 bounded snapshot만 시도하며 torn write를 기다리지 않고 계측 후 건너뜀
+- production DACL은 protected exact 3-ACE 정책: SYSTEM·FrameServer `GENERIC_ALL`, manifest의
+  producer SID `GENERIC_READ | GENERIC_WRITE`; Medium/no-write-up mandatory label 요구
+- production-security `Local\` CI seam이 정상 open/publish/consume, 추가 ACE와 잘못된 label의
+  fail-closed 거부를 확인
+- 별도 process에서 16개 synchronized frame 뒤 consumer ACK 대기 없는 140개 burst를 게시하고
+  정확한 최종 sequence·payload, overwrite 발생, torn/invalid 0을 확인
+- Windows Release CTest 10/10, CPU mailbox 5회 반복, WSL GCC `-Werror` CPU/protocol 통과
+
+Gate를 닫기 위해 남은 항목:
+
+- 인증된 VCIP state machine에 negotiation과 per-connection mailbox 수명주기 연결
+- engine 합성 결과의 GPU readback·CPU NV12 publisher와 60p pacing 연결
+- Media Foundation `RequestSample` latest-frame consumer와 부재·torn·stale fallback 연결
+- producer/source 시작 순서·crash·connection ID 교체·재연결 검증
+- 설치된 실제 Frame Server의 `Global\` mapping 생성·cross-session open·프레임 수신
+- OBS·SOOP·TikTok LIVE Studio의 실제 합성 영상 1920×1080 60p 수신·재연결
+
 ### Gate W4b — 방송 앱 가상 카메라 수신
 
 통과 기준:
@@ -204,9 +242,11 @@ Error code and full log:
 ## 현재 마일스톤
 
 - 2026-08-26 로컬 완료: W1 최선 60 FPS 캡처, W2 GPU surface, W3 1080p60 오프스크린 합성·NV12 변환, W4a COM activation·등록 수명주기, W4b-0 등록 소스 1080p60 테스트 패턴 수신 항목, W4b-1 일반 사용자 엔진 host bounded·Ctrl+C 종료, 기본 W4b-2a Windows control loopback·재연결 및 설치 DLL LocalService handshake·heartbeat
-- 검증 근거: `docs/validation/WINDOWS_W1_W4A_2026-08-26.md`, `docs/validation/WINDOWS_W4B0_2026-08-26.md`, `docs/validation/WINDOWS_W4B1_ENGINE_HOST_2026-08-26.md`, `docs/validation/WINDOWS_W4B2A_CONTROL_IPC_2026-08-26.md`, `docs/validation/WINDOWS_W4B2A_PRODUCER_IDENTITY_2026-08-26.md`
+- 검증 근거: `docs/validation/WINDOWS_W1_W4A_2026-08-26.md`, `docs/validation/WINDOWS_W4B0_2026-08-26.md`, `docs/validation/WINDOWS_W4B1_ENGINE_HOST_2026-08-26.md`, `docs/validation/WINDOWS_W4B2A_CONTROL_IPC_2026-08-26.md`, `docs/validation/WINDOWS_W4B2A_PRODUCER_IDENTITY_2026-08-26.md`, `docs/validation/WINDOWS_W4B2B_CPU_FRAME_TRANSPORT_2026-08-26.md`
 - 입력 한계: 현재 캡처보드 입력은 720×480 60 FPS이며 네이티브 1080p60 입력은 별도 검증 필요
-- 현재 핵심 공백: W4b-2b CPU latest-frame bridge와 실제 합성 프레임 전달
+- W4b-2b 현재 상태: VCIP compact negotiation codec과 exact 1920×1080 NV12 60/1p
+  두 슬롯 CPU latest-frame mailbox core 구현·자동 검증 완료. control negotiation/lifecycle,
+  engine publisher, MF consumer/fallback과 실제 설치 FrameServer 전달은 미구현
 - 로컬 후속: Windows 재부팅 뒤 W4b-0 영구 등록·재수신 확인
 - 구현·자동 검증 완료: installer account SID·Program Files engine final path·SHA-256
   manifest, active console·non-elevated/medium token gate, heartbeat 재검증, FrameServer
@@ -217,6 +257,9 @@ Error code and full log:
   `validate-windows.ps1`가 generation 1 package 설치·재검증과 등록 source 1920x1080 NV12
   60p 샘플 12개 수신을 통과. 이어 설치된 일반 사용자 엔진 ↔ 실제 FrameServer handshake
   1회, heartbeat ACK 147/147, protocol error 0, rejected peer 0 확인
-- 클라우드 다음 범위: W4b-2b CPU latest-frame IPC → D3D11 공유 텍스처 IPC
+- 최신 자동 검증: Windows Release CTest 10/10, CPU mailbox 5회 반복, WSL GCC
+  `-Werror` CPU transport·producer protocol 통과
+- 클라우드 다음 범위: W4b-2b control·mailbox lifecycle → engine render/readback publisher →
+  MF `RequestSample` consumer/fallback → D3D11 공유 텍스처 IPC
 - 로컬 다음 상태: OBS 등록 장치 컬러바·control 수신 통과 후 SOOP·TikTok LIVE Studio까지 1080p60 W4b 확장
 - 병행 범위: D3D11 이미지·텍스트 렌더러, 데스크톱 UI bridge, 실제 1080p60 입력 및 장치 매트릭스

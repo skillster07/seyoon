@@ -16,6 +16,21 @@ inline constexpr std::uint16_t kProtocolMajor = 1;
 inline constexpr std::uint16_t kProtocolMinor = 0;
 inline constexpr std::uint32_t kMaximumPayloadBytes = 64U * 1024U;
 
+// W4b-2b keeps large frame bytes outside VCIP. These compact payloads only
+// negotiate the exact stream and bounded CPU mailbox layout.
+inline constexpr std::uint16_t kNegotiationPayloadSchemaVersion = 1;
+inline constexpr std::uint16_t kOpenStreamPayloadBytes = 48;
+inline constexpr std::uint16_t kTransportOfferPayloadBytes = 40;
+inline constexpr std::uint16_t kTransportDescriptorPayloadBytes = 40;
+inline constexpr std::uint16_t kCpuFrameMailboxLayoutMajor = 1;
+inline constexpr std::uint16_t kCpuFrameMailboxLayoutMinor = 0;
+inline constexpr std::uint32_t kCpuFrameMailboxSlotCount = 2;
+inline constexpr std::uint32_t kCpuFrameMailboxHeaderBytes = 4096;
+inline constexpr std::uint32_t kCpuFrameMailboxSlotMetadataBytes = 64;
+inline constexpr std::uint32_t kCpuFrameMailboxAlignmentBytes = 4096;
+inline constexpr std::uint32_t kMaximumFrameDimension = 8192;
+inline constexpr std::uint32_t kMaximumCpuFrameBytes = 16U * 1024U * 1024U;
+
 using ConnectionId = std::array<std::uint8_t, 16>;
 
 enum class MessageType : std::uint16_t {
@@ -52,6 +67,35 @@ enum class ProtocolError {
   ZeroMessageSequence,
 };
 
+enum class FramePixelFormat : std::uint32_t {
+  Nv12 = 1,
+  Bgra = 2,
+};
+
+enum class FrameTransportKind : std::uint32_t {
+  CpuSharedMemory = 1,
+};
+
+enum class NegotiationPayloadError {
+  None,
+  WrongPayloadSize,
+  UnsupportedSchemaVersion,
+  InvalidStreamId,
+  UnknownPixelFormat,
+  InvalidDimensions,
+  InvalidFrameRate,
+  InvalidStride,
+  InvalidFrameBytes,
+  UnknownTransportKind,
+  UnsupportedTransportLayout,
+  InvalidSlotCount,
+  InvalidCapacity,
+  ArithmeticOverflow,
+  ContractMismatch,
+  NonzeroFlags,
+  NonzeroReserved,
+};
+
 struct MessageHeader {
   std::uint16_t header_bytes{kHeaderBytes};
   std::uint16_t protocol_major{kProtocolMajor};
@@ -71,8 +115,90 @@ struct MessageView {
   std::span<const std::byte> payload;
 };
 
+struct OpenStreamPayload {
+  std::uint16_t schema_version{kNegotiationPayloadSchemaVersion};
+  std::uint16_t payload_bytes{kOpenStreamPayloadBytes};
+  std::uint32_t stream_id{0};
+  std::uint32_t width{0};
+  std::uint32_t height{0};
+  std::uint32_t frame_rate_numerator{0};
+  std::uint32_t frame_rate_denominator{0};
+  FramePixelFormat pixel_format{FramePixelFormat::Nv12};
+  std::uint32_t plane0_stride_bytes{0};
+  std::uint32_t plane1_stride_bytes{0};
+  std::uint32_t frame_bytes{0};
+  std::uint32_t flags{0};
+  std::uint32_t reserved{0};
+};
+
+struct TransportOfferPayload {
+  std::uint16_t schema_version{kNegotiationPayloadSchemaVersion};
+  std::uint16_t payload_bytes{kTransportOfferPayloadBytes};
+  FrameTransportKind transport_kind{FrameTransportKind::CpuSharedMemory};
+  std::uint16_t layout_major{kCpuFrameMailboxLayoutMajor};
+  std::uint16_t layout_minor{kCpuFrameMailboxLayoutMinor};
+  std::uint32_t slot_count{kCpuFrameMailboxSlotCount};
+  std::uint32_t mapping_header_bytes{kCpuFrameMailboxHeaderBytes};
+  std::uint32_t frame_capacity_bytes{0};
+  std::uint64_t mapping_capacity_bytes{0};
+  std::uint32_t flags{0};
+  std::uint32_t reserved{0};
+};
+
+// TransportAccepted and StreamReady both carry this exact descriptor. Echoing
+// the selected layout prevents either peer from silently changing the offer.
+struct TransportDescriptorPayload {
+  std::uint16_t schema_version{kNegotiationPayloadSchemaVersion};
+  std::uint16_t payload_bytes{kTransportDescriptorPayloadBytes};
+  FrameTransportKind transport_kind{FrameTransportKind::CpuSharedMemory};
+  std::uint16_t layout_major{kCpuFrameMailboxLayoutMajor};
+  std::uint16_t layout_minor{kCpuFrameMailboxLayoutMinor};
+  std::uint32_t slot_count{kCpuFrameMailboxSlotCount};
+  std::uint32_t mapping_header_bytes{kCpuFrameMailboxHeaderBytes};
+  std::uint32_t frame_capacity_bytes{0};
+  std::uint64_t mapping_capacity_bytes{0};
+  std::uint32_t flags{0};
+  std::uint32_t reserved{0};
+};
+
 [[nodiscard]] bool is_known_message_type(MessageType type) noexcept;
 [[nodiscard]] std::string_view protocol_error_message(ProtocolError error) noexcept;
+[[nodiscard]] std::string_view negotiation_payload_error_message(
+    NegotiationPayloadError error) noexcept;
+
+// Returns the one valid mapping size for a two-slot CPU mailbox with the
+// supplied frame capacity. Zero means invalid input or arithmetic overflow.
+[[nodiscard]] std::uint64_t cpu_frame_mapping_capacity(
+    std::uint32_t frame_capacity_bytes) noexcept;
+
+[[nodiscard]] NegotiationPayloadError encode_open_stream_payload(
+    const OpenStreamPayload& payload, std::vector<std::byte>& destination);
+[[nodiscard]] NegotiationPayloadError decode_open_stream_payload(
+    std::span<const std::byte> source, OpenStreamPayload& payload) noexcept;
+
+[[nodiscard]] NegotiationPayloadError encode_transport_offer_payload(
+    const TransportOfferPayload& payload,
+    std::vector<std::byte>& destination);
+[[nodiscard]] NegotiationPayloadError decode_transport_offer_payload(
+    std::span<const std::byte> source,
+    TransportOfferPayload& payload) noexcept;
+
+[[nodiscard]] NegotiationPayloadError encode_transport_descriptor_payload(
+    const TransportDescriptorPayload& payload,
+    std::vector<std::byte>& destination);
+[[nodiscard]] NegotiationPayloadError decode_transport_descriptor_payload(
+    std::span<const std::byte> source,
+    TransportDescriptorPayload& payload) noexcept;
+
+// Cross-message validation is intentionally public so the control state
+// machine cannot accept individually valid payloads that describe different
+// stream/layout contracts or silently change an accepted offer.
+[[nodiscard]] NegotiationPayloadError validate_transport_offer_for_open_stream(
+    const OpenStreamPayload& stream,
+    const TransportOfferPayload& offer) noexcept;
+[[nodiscard]] NegotiationPayloadError validate_transport_descriptor_for_offer(
+    const TransportOfferPayload& offer,
+    const TransportDescriptorPayload& descriptor) noexcept;
 
 // Header encoding is explicit and byte-oriented. It never serializes the native
 // MessageHeader object representation.
