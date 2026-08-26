@@ -31,9 +31,9 @@ Media Foundation Capture
 | Virtual Camera | Windows 카메라 출력 | IMFMediaSource/Stream과 MFCreateVirtualCamera 등록·시작·정지·제거, 테스트 패턴 fallback, 비차단 control client와 설치 producer identity verifier 구현; CPU mailbox consumer 연결 예정 |
 | MF Adapter | 타입·샘플·이벤트·descriptor | IMFMediaType, GPU IMFSample, event queue, stream/presentation descriptor와 기본 NV12 선택 구현 |
 | Pixel Conversion | 합성 BGRA를 소비자 포맷으로 변환 | CPU 기준 변환과 D3D11 Video Processor NV12 zero-copy·출력 풀 구현, Windows GPU 변환 통과 |
-| Engine Host | 사용자 세션 장기 실행·상태 보고 | `Program Files`에 설치되는 별도 `vividcam_engine`, 생명주기·heartbeat·정상 종료, negotiated mailbox의 `frame_transport=ready` 텔레메트리 구현 |
+| Engine Host | 사용자 세션 장기 실행·상태 보고 | `Program Files`에 설치되는 별도 `vividcam_engine`, 생명주기·heartbeat·정상 종료, 비차단 frame worker와 publisher/mailbox 텔레메트리 구현 |
 | Control IPC | Engine ↔ Frame Server 제어·상태 | VCIP 1.0 codec, FrameServer service SID 전용 pipe, 설치 사용자 SID·active console·token·경로·SHA-256 identity binding과 heartbeat 재검증, compact frame-transport negotiation·mailbox 수명주기 구현 |
-| Frame IPC | Engine → Frame Server 영상 데이터 | 1920×1080 NV12 60/1p 두 슬롯 CPU latest-frame shared-memory core와 connection별 source-create/engine-open 수명주기 구현; engine publisher·MF consumer 연결 예정 |
+| Frame IPC | Engine → Frame Server 영상 데이터 | 1920×1080 NV12 60/1p 두 슬롯 CPU latest-frame shared-memory, connection별 lifecycle, generation-bound engine publisher 구현; MF consumer 연결 예정 |
 | Bridge | 데스크톱 UI와 네이티브 명령·상태 연결 | 예정 |
 
 ## 프로세스 경계
@@ -59,10 +59,16 @@ bounded control payload I/O, stream negotiation과 connection별 mailbox 수명�
 source control worker에 연결했습니다. Windows CTest 10/10, control transport 5/5, mailbox
 3/3, 결정적 3,110,400-byte NV12 roundtrip과 wrong-order 거부가 통과했습니다.
 
-negotiated mailbox가 있으면 engine heartbeat는 `frame_transport=ready`를 표시합니다. 다만
-engine renderer publisher와 Media Foundation `RequestSample` consumer는 아직 연결하지 않아
-등록 카메라는 계속 W4b-0 컬러바 fallback을 반환합니다. 설치된 실제 Frame Server의
-`Global\` cross-session data-plane도 아직 로컬 검증하지 않았습니다.
+W4b-2c에서는 engine renderer publisher를 연결했습니다. 별도 worker가 물리 카메라의
+NV12·YUY2·BGRA GPU surface를 선택해 1920×1080 장면 합성, NV12 변환과 CPU readback을
+60p로 수행합니다. main engine loop는 mailbox generation별 rational 60p ticket을 만들고
+readback 결과를 connection-bound publish API로 전달합니다. worker와 main 사이 payload는
+reusable vector swap으로 이동하며 3.1MB frame 복사는 없습니다. 카메라/GPU pipeline은
+degraded 시 5초 backoff로 worker thread에서만 재시작하므로 main heartbeat를 막지 않습니다.
+
+Media Foundation `RequestSample` consumer는 아직 연결하지 않아 등록 카메라는 계속 W4b-0
+컬러바 fallback을 반환합니다. 설치된 실제 Frame Server의 `Global\` cross-session publisher도
+아직 로컬 검증하지 않았습니다.
 
 W4b-1의 `schema=1` 출력은 엔진 자체의 운영 텔레메트리 형식이며 프로세스 간 wire
 protocol은 아닙니다. W4b-2a는 사용자 세션의 엔진을 비동기 named-pipe server,
@@ -220,16 +226,19 @@ session 수를 뜻합니다. wrong-order·sequence·correlation·payload 계약 
 게시하지 않고 protocol error로 종료합니다.
 
 현재 mailbox는 control session이 소유합니다. raw mailbox pointer는 외부에 노출하지 않고
-mutex-gated publish/take·snapshot API만 제공합니다. disconnect·reconnect·stop·예외 시 close하며,
+generation-bound publish와 gated take·snapshot API만 제공합니다. publish는 caller가 관측한
+mailbox object name을 같은 control mutex 아래 다시 비교한 뒤에만 write하므로 disconnect와
+새 mapping publication 사이 경쟁에서도 stale frame이 새 generation에 들어가지 않습니다.
+disconnect·reconnect·stop·예외 시 close하며,
 reconnect는 새 connection ID와 새 object name을 사용합니다. source가 heartbeat stale 상태에
 들어가면 take 경로를 suspend하고, producer identity를 다시 검증한 heartbeat를 받은 뒤 같은
 session mailbox를 resume합니다. 자동 loopback은 이
 lifecycle과 한 장의 정확한 3,110,400-byte NV12 publish/consume을 검증했습니다.
 
-다음 구현은 engine 합성 결과의 GPU readback·CPU NV12 publisher와 60p pacing, MF
-`RequestSample` latest-frame consumer와 부재·torn·stale 컬러바/마지막-frame fallback
-순서입니다. 그 전에 설치된 실제 Frame Server가 `Global\` mapping을 만들고 active user
-engine이 cross-session으로 여는 로컬 gate를 별도로 통과해야 합니다.
+engine GPU readback·CPU NV12 publisher와 60p pacing은 W4b-2c에서 구현했습니다. 다음 구현은
+MF `RequestSample` latest-frame consumer와 부재·torn·stale 컬러바/마지막-frame fallback입니다.
+설치된 실제 Frame Server가 `Global\` mapping을 만들고 active user engine publisher가 쓰는
+로컬 gate는 별도로 통과해야 합니다.
 
 ## 60p 타이밍 원칙
 
@@ -242,8 +251,9 @@ engine이 cross-session으로 여는 로컬 gate를 별도로 통과해야 합�
 - W4b-1 엔진 heartbeat는 steady clock 기반 deadline과 누락 interval을 검증합니다.
 - W4b-2a cross-process heartbeat는 500ms마다 전송하고 1500ms stale, 3000ms reconnect와
   100→200→400→800→1600→2000ms 제한 backoff를 적용합니다.
-- W4b-2b mailbox는 중간 frame을 쌓지 않고 최신 frame으로 따라잡지만, 실제 합성 프레임의
-  wall-clock 60p pacing은 engine publisher를 연결한 뒤 별도로 검증합니다.
+- W4b-2b mailbox는 중간 frame을 쌓지 않고 최신 frame으로 따라잡습니다.
+- W4b-2c worker와 publisher는 각각 rational 60p deadline을 사용하고, 늦은 작업은 catch-up
+  burst 대신 drop으로 기록합니다. 실제 하드웨어 wall-clock 성능은 로컬 gate에서 검증합니다.
 
 ## 스레드 모델 초안
 
@@ -292,7 +302,10 @@ engine이 cross-session으로 여는 로컬 gate를 별도로 통과해야 합�
 25. installer user SID·active console·non-elevated token, regular non-reparse sibling 경로·SHA-256 manifest와 FrameServer service identity를 묶고 heartbeat마다 재검증하는 producer identity gate — 구현, Windows 자동 검증과 elevated `validate-windows.ps1` generation 1 설치·실제 FrameServer handshake 1회·heartbeat ACK 147/147 통과
 26. CPU latest-frame 브리지 — compact negotiation codec·두 슬롯 mailbox core, bounded
     payload I/O와 connection별 create/open·stale·재연결·종료 lifecycle 구현; Windows CTest
-    10/10, control 5/5, mailbox 3/3 통과. 설치 FrameServer `Global\` gate, engine publisher와
-    MF consumer 진행 예정
-27. D3D11 공유 텍스처 IPC와 CPU fallback, device-lost·재연결 복구
-28. OBS → SOOP → TikTok LIVE Studio 장치 열거·1080p60 수신 W4b
+    10/10, control 5/5, mailbox 3/3 통과
+27. 비압축 카메라 GPU frame의 compositor·NV12 readback, 비차단 60p worker와
+    generation-bound CPU mailbox publisher — 구현, Windows CTest 13/13과 핵심 5회 반복 통과;
+    설치 FrameServer `Global\` publisher gate 대기
+28. MF RequestSample mailbox consumer와 부재·torn·stale fallback
+29. D3D11 공유 텍스처 IPC와 CPU fallback, device-lost·재연결 복구
+30. OBS → SOOP → TikTok LIVE Studio 장치 열거·1080p60 수신 W4b

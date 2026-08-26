@@ -58,7 +58,9 @@ void assert_mailbox_round_trip(
 
   const auto expected = deterministic_nv12_frame(sequence, value);
   std::string error;
-  assert(producer.publish_cpu_frame(expected, error));
+  assert(producer.publish_cpu_frame_for_mailbox(
+             expected, producer.frame_mailbox_name(), error) ==
+         vividcam::CpuFramePublishResult::Published);
   assert(error.empty());
   const auto actual = source.take_latest_cpu_frame(error);
   assert(actual);
@@ -70,6 +72,32 @@ void assert_mailbox_round_trip(
   assert(actual->height == expected.height);
   assert(actual->y_stride_bytes == expected.y_stride_bytes);
   assert(actual->uv_stride_bytes == expected.uv_stride_bytes);
+  assert(actual->bytes == expected.bytes);
+}
+
+void assert_generation_bound_publish(
+    vividcam::ProducerControlServer& producer,
+    vividcam::SourceControlClient& source) {
+  const auto mailbox_name = producer.frame_mailbox_name();
+  assert(!mailbox_name.empty());
+  const auto expected = deterministic_nv12_frame(102, 0x6b);
+  std::string error;
+
+  assert(producer.publish_cpu_frame_for_mailbox(
+             expected, mailbox_name + L"-stale", error) ==
+         vividcam::CpuFramePublishResult::MailboxChanged);
+  assert(!error.empty());
+  error.clear();
+  assert(!source.take_latest_cpu_frame(error));
+  assert(error.empty());
+
+  assert(producer.publish_cpu_frame_for_mailbox(expected, mailbox_name,
+                                                 error) ==
+         vividcam::CpuFramePublishResult::Published);
+  assert(error.empty());
+  const auto actual = source.take_latest_cpu_frame(error);
+  assert(actual);
+  assert(actual->sequence == expected.sequence);
   assert(actual->bytes == expected.bytes);
 }
 
@@ -449,6 +477,7 @@ int main() {
     assert(server_status.rejected_peers == 0);
 
     assert_mailbox_round_trip(server, client, 101, 0x5a);
+    assert_generation_bound_publish(server, client);
 
     const auto stop_started = std::chrono::steady_clock::now();
     client.stop();
@@ -517,6 +546,21 @@ int main() {
     assert(!second_mailbox_name.empty());
     assert(second_mailbox_name == server.frame_mailbox_name());
     assert(second_mailbox_name != first_mailbox_name);
+
+    // The old generation must not be able to publish into the newly active
+    // mailbox. This exercises a real disconnect/reconnect name change rather
+    // than only a synthetic string mismatch.
+    const auto stale_frame = deterministic_nv12_frame(202, 0x91);
+    const auto stale_publish_started = std::chrono::steady_clock::now();
+    assert(server.publish_cpu_frame_for_mailbox(
+               stale_frame, first_mailbox_name, error) ==
+           vividcam::CpuFramePublishResult::MailboxChanged);
+    assert(std::chrono::steady_clock::now() - stale_publish_started < 1s);
+    assert(!error.empty());
+    error.clear();
+    assert(!client.take_latest_cpu_frame(error));
+    assert(error.empty());
+
     assert_mailbox_round_trip(server, client, 202, 0xc7);
 
     const auto stop_started = std::chrono::steady_clock::now();

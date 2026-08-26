@@ -37,6 +37,13 @@ struct CameraEnumerationResult {
 [[nodiscard]] std::optional<CameraFormat> select_preferred_format(
     const std::vector<CameraFormat>& formats, std::uint32_t target_width = 1920,
     std::uint32_t target_height = 1080, std::uint32_t target_fps = 60) noexcept;
+[[nodiscard]] bool is_gpu_compositor_capture_format(
+    PixelFormat format) noexcept;
+[[nodiscard]] std::optional<CameraFormat>
+select_preferred_gpu_compositor_format(
+    const std::vector<CameraFormat>& formats, std::uint32_t target_width = 1920,
+    std::uint32_t target_height = 1080,
+    std::uint32_t target_fps = 60) noexcept;
 [[nodiscard]] const char* pixel_format_name(PixelFormat format) noexcept;
 
 } // namespace vividcam

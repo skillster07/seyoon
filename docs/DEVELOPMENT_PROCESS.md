@@ -151,12 +151,11 @@ package 검증은 실제 설치 engine ↔ FrameServer handshake·heartbeat 통�
 - 자동 게이트 뒤 관리자 재설치, 설치된 엔진의 일반 사용자 실행, 실제 FrameServer
   handshake·heartbeat를 확인해야 로컬 설치 통합 항목 완료
 
-### Gate W4b-2b — CPU latest-frame 데이터 평면 (진행 중)
+### Gate W4b-2b — CPU latest-frame transport·mailbox (자동 검증 완료)
 
 negotiation codec·독립 shared-memory mailbox core에 이어 인증된 control session의
-**negotiation과 connection별 mailbox lifecycle 자동 검증까지 완료**했습니다. engine
-publisher·Media Foundation consumer와 설치된 실제 Frame Server 검증이 남아 있으므로 Gate
-W4b-2b 전체를 완료로 판정하지 않습니다.
+**negotiation과 connection별 mailbox lifecycle 자동 검증까지 완료**했습니다. 설치된 실제
+Frame Server 검증과 후속 publisher·consumer는 각각 W4b-2c/W4b-2d에서 추적합니다.
 
 자동 통과 항목:
 
@@ -194,13 +193,47 @@ W4b-2b 전체를 완료로 판정하지 않습니다.
 - negotiated mailbox가 있으면 engine heartbeat에 `frame_transport=ready`, session이 없으면
   `unavailable` 표시
 
-Gate를 닫기 위해 남은 항목:
+후속 Gate에서 남은 항목:
 
-- engine 합성 결과의 GPU readback·CPU NV12 publisher와 60p pacing 연결
 - Media Foundation `RequestSample` latest-frame consumer와 부재·torn·stale fallback 연결
 - 설치된 실제 Frame Server의 `Global\` mapping 생성·cross-session open, producer/source
   crash·재시작·재연결 로컬 검증
 - OBS·SOOP·TikTok LIVE Studio의 실제 합성 영상 1920×1080 60p 수신·재연결
+
+### Gate W4b-2c — engine CPU frame publisher (로컬 검증 대기)
+
+자동 통과 항목:
+
+- 물리 카메라 후보를 순회하며 NV12·YUY2·BGRA 비압축 GPU compositor 입력만 선택하고
+  MJPEG·H264-only 장치는 명확한 degraded 상태로 처리
+- GPU capture → SOOP 1920×1080 compositor → NV12 converter → D3D11 staging readback 연결
+- row pitch를 존중해 Y 1080행과 UV 540행을 고정 3,110,400-byte packed frame으로 복사하고
+  staging·CPU buffer allocation 재사용
+- rational 60p schedule, 단조 logical sequence·100ns timestamp, 늦은 frame backlog drop,
+  반복 source frame과 NoInput/readback/transport/publish 실패 계측
+- 카메라·GPU start/pump/stop을 전용 worker thread에 격리하고 mailbox 부재 시 비차단 disable,
+  degraded 시 5초 backoff 재시작
+- reusable frame 세 개의 swap 순환으로 3.1MB payload를 worker와 publisher 사이에서 복사하지 않음
+- mailbox object name을 connection generation으로 추적하고, 이름 비교와 publish를 같은 control
+  mutex 안에서 수행하여 reconnect 중 stale frame의 새 mapping 유입 차단
+- source session을 먼저 닫은 뒤 worker를 join하여 느린 카메라 종료 중에도 Frame Server가
+  control disconnect를 먼저 관측
+- heartbeat에서 worker/publisher/mailbox drop·오류·readback/publish p95 telemetry 출력
+- Windows Release CTest 13/13, publisher·worker·control transport 5회 반복, portable GCC
+  strict warning·sanitizer worker 검증 통과
+
+로컬 통과 기준:
+
+- 새 package를 설치한 뒤 일반 사용자 engine과 `--registered-source-hold-test`를 동시에 실행
+- diagnostics가 현재 컬러바 600개를 수신해 약 10초 동안 실제 Frame Server session을 유지;
+  이 결과만으로 publisher를 증명하지 않으며 engine telemetry를 함께 판정
+- engine `[engine-frame]`이 `state=ready mailbox=ready published>0`을 기록
+- `successful_handshakes >= 1`, heartbeat send/ack 일치, protocol error·rejected peer 0
+- engine 종료 뒤 물리 카메라를 다른 앱에서 다시 열 수 있음
+
+MF source가 mailbox frame을 반환하는 W4b-2d가 아직 없으므로 이 gate의 diagnostics 영상은
+W4b-0 컬러바입니다. `published>0`은 실제 engine frame이 `Global\` mailbox에 쓰였음을 뜻하지만
+등록 카메라가 그 frame을 표시했다는 뜻은 아닙니다.
 
 ### Gate W4b — 방송 앱 가상 카메라 수신
 
@@ -259,8 +292,10 @@ Error code and full log:
 - 입력 한계: 현재 캡처보드 입력은 720×480 60 FPS이며 네이티브 1080p60 입력은 별도 검증 필요
 - W4b-2b 현재 상태: VCIP compact negotiation codec, exact 1920×1080 NV12 60/1p 두 슬롯
   CPU latest-frame mailbox core와 authenticated control negotiation·connection별 lifecycle
-  구현·자동 검증 완료. engine publisher와 MF consumer/fallback은 미구현이며 실제 설치
-  FrameServer `Global\` 전달은 미검증
+  구현·자동 검증 완료
+- W4b-2c 현재 상태: 비압축 physical capture → GPU compositor → NV12 readback → generation-bound
+  mailbox publisher와 비차단 60p worker 구현·자동 검증 완료. 설치 FrameServer `Global\`
+  publisher 로컬 gate는 미검증이며 MF consumer/fallback은 W4b-2d 범위
 - 로컬 후속: Windows 재부팅 뒤 W4b-0 영구 등록·재수신 확인
 - 구현·자동 검증 완료: installer account SID·Program Files engine final path·SHA-256
   manifest, active console·non-elevated/medium token gate, heartbeat 재검증, FrameServer
@@ -271,12 +306,13 @@ Error code and full log:
   `validate-windows.ps1`가 generation 1 package 설치·재검증과 등록 source 1920x1080 NV12
   60p 샘플 12개 수신을 통과. 이어 설치된 일반 사용자 엔진 ↔ 실제 FrameServer handshake
   1회, heartbeat ACK 147/147, protocol error 0, rejected peer 0 확인
-- 최신 자동 검증: Windows Release CTest 10/10, control transport 5/5, CPU mailbox 3/3,
-  deterministic 3,110,400-byte NV12 roundtrip과 wrong-order 거부 통과. 첫 core의 mailbox
-  5회 반복·WSL GCC `-Werror` CPU transport·producer protocol 기록도 유지
-- 클라우드 다음 범위: engine render/readback CPU NV12 publisher·60p pacing → MF
-  `RequestSample` consumer/fallback → 실제 합성 frame 전달 → D3D11 공유 텍스처 IPC
-- 로컬 다음 범위: 설치된 실제 FrameServer의 `Global\` cross-session mapping 생성·open과
-  producer/source 재시작·재연결 확인
+- 최신 자동 검증: Windows Release CTest 13/13, engine publisher·worker·control transport
+  각 5회 반복, deterministic 3,110,400-byte NV12 roundtrip과 real reconnect stale-generation
+  거부 통과. 첫 core의 mailbox 5회 반복·WSL GCC `-Werror` CPU transport·producer protocol
+  기록도 유지
+- 클라우드 다음 범위: MF `RequestSample` mailbox consumer/fallback → 실제 합성 frame 전달 →
+  D3D11 공유 텍스처 IPC
+- 로컬 다음 범위: 새 package 설치 후 `--registered-source-hold-test`와 engine telemetry로 실제 FrameServer의
+  `Global\` mapping publisher·producer/source 재시작·재연결 확인
 - 로컬 다음 상태: OBS 등록 장치 컬러바·control 수신 통과 후 SOOP·TikTok LIVE Studio까지 1080p60 W4b 확장
 - 병행 범위: D3D11 이미지·텍스트 렌더러, 데스크톱 UI bridge, 실제 1080p60 입력 및 장치 매트릭스

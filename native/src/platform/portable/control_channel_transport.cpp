@@ -33,9 +33,10 @@ class ProducerControlServer::Impl {
     return snapshot_;
   }
 
-  bool publish_cpu_frame(const CpuNv12Frame&, std::string& error) {
+  CpuFramePublishResult publish_cpu_frame_for_mailbox(
+      const CpuNv12Frame&, std::wstring_view, std::string& error) {
     error = kUnsupported;
-    return false;
+    return CpuFramePublishResult::TransportUnavailable;
   }
 
   CpuFrameMailboxSnapshot frame_mailbox_snapshot() const { return {}; }
@@ -115,9 +116,11 @@ ControlChannelTransportSnapshot ProducerControlServer::snapshot() const {
   return impl_->snapshot();
 }
 
-bool ProducerControlServer::publish_cpu_frame(const CpuNv12Frame& frame,
-                                              std::string& error) {
-  return impl_->publish_cpu_frame(frame, error);
+CpuFramePublishResult ProducerControlServer::publish_cpu_frame_for_mailbox(
+    const CpuNv12Frame& frame, std::wstring_view expected_mailbox_name,
+    std::string& error) {
+  return impl_->publish_cpu_frame_for_mailbox(frame, expected_mailbox_name,
+                                               error);
 }
 
 CpuFrameMailboxSnapshot ProducerControlServer::frame_mailbox_snapshot() const {

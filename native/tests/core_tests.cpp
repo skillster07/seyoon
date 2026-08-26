@@ -93,6 +93,32 @@ int main() {
   const std::vector<CameraFormat> invalid_formats = {{0, 0, 0, 0, PixelFormat::Unknown}};
   assert(!select_preferred_format(invalid_formats).has_value());
 
+  assert(is_gpu_compositor_capture_format(PixelFormat::Nv12));
+  assert(is_gpu_compositor_capture_format(PixelFormat::Yuy2));
+  assert(is_gpu_compositor_capture_format(PixelFormat::Bgra));
+  assert(!is_gpu_compositor_capture_format(PixelFormat::Mjpeg));
+  assert(!is_gpu_compositor_capture_format(PixelFormat::H264));
+  assert(!is_gpu_compositor_capture_format(PixelFormat::Unknown));
+
+  const std::vector<CameraFormat> gpu_compositor_formats = {
+      {1920, 1080, 60, 1, PixelFormat::Mjpeg},
+      {1920, 1080, 60, 1, PixelFormat::H264},
+      {1280, 720, 60, 1, PixelFormat::Nv12},
+  };
+  const auto gpu_compositor_format =
+      select_preferred_gpu_compositor_format(gpu_compositor_formats);
+  assert(gpu_compositor_format.has_value());
+  assert(gpu_compositor_format->width == 1280);
+  assert(gpu_compositor_format->height == 720);
+  assert(gpu_compositor_format->pixel_format == PixelFormat::Nv12);
+
+  const std::vector<CameraFormat> compressed_formats = {
+      {1920, 1080, 60, 1, PixelFormat::Mjpeg},
+      {1920, 1080, 60, 1, PixelFormat::H264},
+  };
+  assert(!select_preferred_gpu_compositor_format(compressed_formats)
+              .has_value());
+
   LatestFrameBuffer<CapturedFrame> latest_frames;
   latest_frames.push({1, 100, 166667, formats.back(), {1, 2, 3}, std::nullopt});
   latest_frames.push({2, 200, 166667, formats.back(), {4, 5, 6}, std::nullopt});

@@ -1634,13 +1634,24 @@ class ProducerControlServer::Impl {
     return snapshot_;
   }
 
-  bool publish_cpu_frame(const CpuNv12Frame& frame, std::string& error) {
+  CpuFramePublishResult publish_cpu_frame_for_mailbox(
+      const CpuNv12Frame& frame, std::wstring_view expected_mailbox_name,
+      std::string& error) {
     std::scoped_lock lock(mutex_);
     if (!active_mailbox_) {
       error = "CPU frame mailbox is not ready";
-      return false;
+      return CpuFramePublishResult::TransportUnavailable;
     }
-    return active_mailbox_->publish(frame, error);
+    if (expected_mailbox_name.empty() ||
+        active_mailbox_->name() != expected_mailbox_name) {
+      error = "CPU frame mailbox changed before publish";
+      return CpuFramePublishResult::MailboxChanged;
+    }
+    if (!active_mailbox_->publish(frame, error)) {
+      return CpuFramePublishResult::Failed;
+    }
+    error.clear();
+    return CpuFramePublishResult::Published;
   }
 
   CpuFrameMailboxSnapshot frame_mailbox_snapshot() const {
@@ -2620,9 +2631,11 @@ ControlChannelTransportSnapshot ProducerControlServer::snapshot() const {
   return impl_->snapshot();
 }
 
-bool ProducerControlServer::publish_cpu_frame(const CpuNv12Frame& frame,
-                                              std::string& error) {
-  return impl_->publish_cpu_frame(frame, error);
+CpuFramePublishResult ProducerControlServer::publish_cpu_frame_for_mailbox(
+    const CpuNv12Frame& frame, std::wstring_view expected_mailbox_name,
+    std::string& error) {
+  return impl_->publish_cpu_frame_for_mailbox(frame, expected_mailbox_name,
+                                               error);
 }
 
 CpuFrameMailboxSnapshot ProducerControlServer::frame_mailbox_snapshot() const {

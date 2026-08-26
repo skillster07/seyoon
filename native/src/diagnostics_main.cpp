@@ -186,6 +186,9 @@ int main(int argc, char** argv) {
   const bool registered_source_test = argc > 1 &&
                                       std::string_view(argv[1]) ==
                                           "--registered-source-test";
+  const bool registered_source_hold_test =
+      argc > 1 && std::string_view(argv[1]) ==
+                      "--registered-source-hold-test";
   const bool control_client_test = argc > 1 &&
                                    std::string_view(argv[1]) ==
                                        "--control-client-test";
@@ -388,21 +391,32 @@ int main(int argc, char** argv) {
 #endif
     return registration_result;
   }
-  if (registered_source_test) {
-    const auto result = run_registered_virtual_camera_smoke();
+  if (registered_source_test || registered_source_hold_test) {
+    // Keep the real Frame Server connection alive for roughly ten seconds so
+    // engine-side publisher telemetry can be observed. This command still
+    // validates the registered source's current output (synthetic until the
+    // MF mailbox consumer lands); it does not prove publisher provenance by
+    // itself. The ordinary installer/CI smoke remains intentionally short.
+    const std::uint32_t required_samples =
+        registered_source_hold_test ? 600U : 12U;
+    const auto result =
+        run_registered_virtual_camera_smoke(required_samples, 15000U);
+    const char* label = registered_source_hold_test
+                            ? "registered-source-hold"
+                            : "registered-source";
     if (!result.supported) {
-      std::cout << "[registered-source] unavailable: " << result.error << '\n';
+      std::cout << '[' << label << "] unavailable: " << result.error << '\n';
       return 5;
     }
     if (!result.passed) {
-      std::cout << "[registered-source] failed after " << result.samples
+      std::cout << '[' << label << "] failed after " << result.samples
                 << " sample(s), empty callbacks=" << result.empty_callbacks
                 << ", flags=0x" << std::hex << std::uppercase
                 << result.source_reader_flags << std::dec << ": "
                 << result.error << '\n';
       return 5;
     }
-    std::cout << "[registered-source] samples=" << result.samples
+    std::cout << '[' << label << "] samples=" << result.samples
               << " type=" << result.width << 'x' << result.height << " NV12 "
               << result.fps_numerator << '/' << result.fps_denominator
               << "p checksums=" << result.distinct_checksums
