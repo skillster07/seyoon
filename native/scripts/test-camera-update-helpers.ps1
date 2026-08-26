@@ -52,6 +52,12 @@ function Assert-Events {
 
 $script:ServiceEvents = [System.Collections.Generic.List[string]]::new()
 $script:FakeFrameServer = $null
+$script:StopFailuresRemaining = 0
+$script:StopFailureLeavesStopped = $false
+$script:StopAttempts = 0
+$script:WaitFailuresRemaining = 0
+$script:WaitFailureNextStatus = $null
+$script:GetServiceFailuresRemaining = 0
 
 function New-FakeFrameServer {
     param(
@@ -74,8 +80,16 @@ function New-FakeFrameServer {
 
             [void]$script:ServiceEvents.Add(
                 "wait:$($this.Status)->$DesiredStatus")
-            if ($Timeout.TotalSeconds -ne 15) {
+            if ($Timeout -le [TimeSpan]::Zero -or
+                $Timeout -gt [TimeSpan]::FromMilliseconds(500)) {
                 throw "Unexpected FrameServer wait timeout: $Timeout"
+            }
+            if ($script:WaitFailuresRemaining -gt 0) {
+                --$script:WaitFailuresRemaining
+                if ($null -ne $script:WaitFailureNextStatus) {
+                    $this.Status = $script:WaitFailureNextStatus
+                }
+                throw "Transient fake FrameServer wait timeout"
             }
             if ($this.Status -eq
                     [System.ServiceProcess.ServiceControllerStatus]::StopPending -and
@@ -107,6 +121,10 @@ function Get-Service {
             $Name, "FrameServer", [StringComparison]::Ordinal)) {
         throw "Camera update helper requested an unexpected service: $Name"
     }
+    if ($script:GetServiceFailuresRemaining -gt 0) {
+        --$script:GetServiceFailuresRemaining
+        throw "Transient fake FrameServer query failure"
+    }
     return $script:FakeFrameServer
 }
 
@@ -114,6 +132,15 @@ function Stop-Service {
     param($InputObject, $ErrorAction)
 
     [void]$script:ServiceEvents.Add("stop:$($InputObject.Name)")
+    ++$script:StopAttempts
+    if ($script:StopFailuresRemaining -gt 0) {
+        --$script:StopFailuresRemaining
+        if ($script:StopFailureLeavesStopped) {
+            $InputObject.Status =
+                [System.ServiceProcess.ServiceControllerStatus]::Stopped
+        }
+        throw "Transient fake FrameServer stop failure"
+    }
     if (-not $InputObject.CanStop) {
         throw "Fake FrameServer does not accept stop controls"
     }
@@ -146,6 +173,12 @@ function Test-FrameServerStopHelper {
     . ([scriptblock]::Create($FunctionText))
 
     $script:ServiceEvents.Clear()
+    $script:StopFailuresRemaining = 0
+    $script:StopFailureLeavesStopped = $false
+    $script:StopAttempts = 0
+    $script:WaitFailuresRemaining = 0
+    $script:WaitFailureNextStatus = $null
+    $script:GetServiceFailuresRemaining = 0
     $script:FakeFrameServer = New-FakeFrameServer `
         -Status ([System.ServiceProcess.ServiceControllerStatus]::Running) `
         -CanStop $true
@@ -158,6 +191,7 @@ function Test-FrameServerStopHelper {
         "get:FrameServer", "stop:FrameServer", "wait:StopPending->Stopped")
 
     $script:ServiceEvents.Clear()
+    $script:StopAttempts = 0
     $script:FakeFrameServer = New-FakeFrameServer `
         -Status ([System.ServiceProcess.ServiceControllerStatus]::StopPending) `
         -CanStop $false
@@ -170,6 +204,21 @@ function Test-FrameServerStopHelper {
         "get:FrameServer", "wait:StopPending->Stopped")
 
     $script:ServiceEvents.Clear()
+    $script:StopAttempts = 0
+    $script:FakeFrameServer = New-FakeFrameServer `
+        -Status ([System.ServiceProcess.ServiceControllerStatus]::StartPending) `
+        -CanStop $true
+    Stop-VividCamFrameServer
+    Assert-Condition -Condition (
+        $script:FakeFrameServer.Status -eq
+            [System.ServiceProcess.ServiceControllerStatus]::Stopped) `
+        -Message "$ScriptLabel did not stop after StartPending completed"
+    Assert-Events -Label "$ScriptLabel start-pending stop" -Expected @(
+        "get:FrameServer", "wait:StartPending->Running",
+        "get:FrameServer", "stop:FrameServer", "wait:StopPending->Stopped")
+
+    $script:ServiceEvents.Clear()
+    $script:StopAttempts = 0
     $script:FakeFrameServer = New-FakeFrameServer `
         -Status ([System.ServiceProcess.ServiceControllerStatus]::Running) `
         -CanStop $false
@@ -190,6 +239,120 @@ function Test-FrameServerStopHelper {
         -Message "$ScriptLabel did not report a clear non-stoppable error"
     Assert-Events -Label "$ScriptLabel rejected stop" -Expected @(
         "get:FrameServer")
+
+    $script:ServiceEvents.Clear()
+    $script:GetServiceFailuresRemaining = 1
+    $script:FakeFrameServer = New-FakeFrameServer `
+        -Status ([System.ServiceProcess.ServiceControllerStatus]::Running) `
+        -CanStop $true
+    $QueryFailureRejected = $false
+    $QueryFailureMessage = $null
+    try {
+        Stop-VividCamFrameServer
+    } catch {
+        $QueryFailureRejected = $true
+        $QueryFailureMessage = $_.Exception.Message
+    }
+    Assert-Condition -Condition $QueryFailureRejected `
+        -Message "$ScriptLabel treated a service query failure as stopped"
+    Assert-Condition -Condition (
+        $QueryFailureMessage.IndexOf(
+            "Could not query FrameServer state",
+            [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+        $QueryFailureMessage.IndexOf(
+            "Transient fake FrameServer query failure",
+            [StringComparison]::OrdinalIgnoreCase) -ge 0) `
+        -Message "$ScriptLabel did not preserve its service query failure"
+    $script:GetServiceFailuresRemaining = 0
+
+    $script:ServiceEvents.Clear()
+    $script:StopFailuresRemaining = 1
+    $script:StopFailureLeavesStopped = $true
+    $script:StopAttempts = 0
+    $script:FakeFrameServer = New-FakeFrameServer `
+        -Status ([System.ServiceProcess.ServiceControllerStatus]::Running) `
+        -CanStop $true
+    Stop-VividCamFrameServer
+    Assert-Condition -Condition (
+        $script:FakeFrameServer.Status -eq
+            [System.ServiceProcess.ServiceControllerStatus]::Stopped) `
+        -Message ("$ScriptLabel did not accept a transient service-control " +
+                  "error after FrameServer had already stopped")
+    Assert-Condition -Condition ($script:StopAttempts -eq 1) `
+        -Message "$ScriptLabel retried an already stopped FrameServer"
+
+    $script:ServiceEvents.Clear()
+    $script:StopFailuresRemaining = 1
+    $script:StopFailureLeavesStopped = $false
+    $script:StopAttempts = 0
+    $script:FakeFrameServer = New-FakeFrameServer `
+        -Status ([System.ServiceProcess.ServiceControllerStatus]::Running) `
+        -CanStop $true
+    Stop-VividCamFrameServer
+    Assert-Condition -Condition (
+        $script:FakeFrameServer.Status -eq
+            [System.ServiceProcess.ServiceControllerStatus]::Stopped) `
+        -Message "$ScriptLabel did not recover from a transient stop failure"
+    Assert-Condition -Condition ($script:StopAttempts -eq 2) `
+        -Message "$ScriptLabel did not retry FrameServer exactly once"
+
+    $script:ServiceEvents.Clear()
+    $script:StopFailuresRemaining = 0
+    $script:WaitFailuresRemaining = 1
+    $script:WaitFailureNextStatus =
+        [System.ServiceProcess.ServiceControllerStatus]::Running
+    $script:StopAttempts = 0
+    $script:FakeFrameServer = New-FakeFrameServer `
+        -Status ([System.ServiceProcess.ServiceControllerStatus]::Running) `
+        -CanStop $true
+    Stop-VividCamFrameServer
+    Assert-Condition -Condition (
+        $script:FakeFrameServer.Status -eq
+            [System.ServiceProcess.ServiceControllerStatus]::Stopped) `
+        -Message ("$ScriptLabel did not recover when a StopPending service " +
+                  "returned to Running")
+    Assert-Condition -Condition ($script:StopAttempts -eq 2) `
+        -Message ("$ScriptLabel did not reissue stop after the service " +
+                  "returned to Running")
+    $script:WaitFailuresRemaining = 0
+    $script:WaitFailureNextStatus = $null
+
+    $script:ServiceEvents.Clear()
+    $script:StopFailuresRemaining = 1000
+    $script:StopFailureLeavesStopped = $false
+    $script:StopAttempts = 0
+    $script:FakeFrameServer = New-FakeFrameServer `
+        -Status ([System.ServiceProcess.ServiceControllerStatus]::Running) `
+        -CanStop $true
+    $PersistentFailureRejected = $false
+    $PersistentFailureMessage = $null
+    try {
+        Stop-VividCamFrameServer `
+            -Timeout ([TimeSpan]::FromMilliseconds(50))
+    } catch {
+        $PersistentFailureRejected = $true
+        $PersistentFailureMessage = $_.Exception.Message
+    }
+    Assert-Condition -Condition $PersistentFailureRejected `
+        -Message "$ScriptLabel did not bound persistent stop failures"
+    Assert-Condition -Condition (
+        $PersistentFailureMessage.IndexOf(
+            "Last service-control error",
+            [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+        $PersistentFailureMessage.IndexOf(
+            "Transient fake FrameServer stop failure",
+            [StringComparison]::OrdinalIgnoreCase) -ge 0) `
+        -Message "$ScriptLabel did not preserve its final stop failure"
+    Assert-Condition -Condition (
+        $script:FakeFrameServer.Status -eq
+            [System.ServiceProcess.ServiceControllerStatus]::Running) `
+        -Message "$ScriptLabel persistent failure fixture stopped unexpectedly"
+
+    $script:StopFailuresRemaining = 0
+    $script:StopFailureLeavesStopped = $false
+    $script:WaitFailuresRemaining = 0
+    $script:WaitFailureNextStatus = $null
+    $script:GetServiceFailuresRemaining = 0
 }
 
 $InstallerPath = Join-Path $PSScriptRoot "install-virtual-camera.ps1"
@@ -327,6 +490,9 @@ try {
 
     Assert-VividCamCameraIdentity `
         -ExpectedLink "VIVIDCAM-LINK-001" -ActualLink "VIVIDCAM-LINK-001"
+    Assert-VividCamCameraIdentity `
+        -ExpectedLink "\\?\swd#vcamdevapi#VIVIDCAM-LINK-AbC" `
+        -ActualLink "\\?\SWD#VCAMDEVAPI#vividcam-link-aBc"
     $IdentityMismatchRejected = $false
     $IdentityMismatchMessage = $null
     try {

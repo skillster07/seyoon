@@ -50,30 +50,100 @@ if ($AllUsers) {
 }
 
 function Stop-VividCamFrameServer {
-    $Service = Get-Service -Name "FrameServer" -ErrorAction SilentlyContinue
-    if ($null -eq $Service -or $Service.Status -eq "Stopped") { return }
-    if ($Service.Status -eq "StopPending") {
-        $Service.WaitForStatus(
-            [System.ServiceProcess.ServiceControllerStatus]::Stopped,
-            [TimeSpan]::FromSeconds(15))
-        return
+    param([TimeSpan]$Timeout = ([TimeSpan]::FromSeconds(15)))
+
+    if ($Timeout -le [TimeSpan]::Zero) {
+        throw "FrameServer stop timeout must be positive"
     }
-    if ($Service.Status -eq "StartPending") {
-        $Service.WaitForStatus(
-            [System.ServiceProcess.ServiceControllerStatus]::Running,
-            [TimeSpan]::FromSeconds(15))
-        $Service.Refresh()
+    $Deadline = [DateTime]::UtcNow.Add($Timeout)
+    $LastStopFailure = $null
+    $StopMessageWritten = $false
+    $StopAttempts = 0
+    $MaximumStopAttempts = 5
+    while ($true) {
+        try {
+            $Service = Get-Service -Name "FrameServer" -ErrorAction Stop
+        } catch {
+            throw "Could not query FrameServer state: $($_.Exception.Message)"
+        }
+        if ($Service.Status -eq "Stopped") { return }
+
+        $Remaining = $Deadline - [DateTime]::UtcNow
+        if ($Remaining -le [TimeSpan]::Zero) {
+            $FailureDetail = if ($null -ne $LastStopFailure) {
+                " Last service-control error: $LastStopFailure"
+            } else {
+                ""
+            }
+            throw ("FrameServer did not stop within $($Timeout.TotalSeconds) " +
+                   "seconds. Close applications using a camera and " +
+                   "retry.$FailureDetail")
+        }
+        $WaitSlice = [TimeSpan]::FromMilliseconds(
+            [Math]::Min(500.0, $Remaining.TotalMilliseconds))
+        if ($Service.Status -eq "StopPending") {
+            try {
+                $Service.WaitForStatus(
+                    [System.ServiceProcess.ServiceControllerStatus]::Stopped,
+                    $WaitSlice)
+                return
+            } catch {
+                continue
+            }
+        }
+        if ($Service.Status -eq "StartPending") {
+            try {
+                $Service.WaitForStatus(
+                    [System.ServiceProcess.ServiceControllerStatus]::Running,
+                    $WaitSlice)
+            } catch {}
+            continue
+        }
+        if (-not $Service.CanStop) {
+            throw ("FrameServer is running but does not accept stop controls. " +
+                   "Close applications using a camera and retry.")
+        }
+        if ($StopAttempts -ge $MaximumStopAttempts) {
+            $FailureDetail = if ($null -ne $LastStopFailure) {
+                " Last service-control error: $LastStopFailure"
+            } else {
+                ""
+            }
+            throw ("FrameServer remained running after " +
+                   "$MaximumStopAttempts stop attempts. Close applications " +
+                   "using a camera and retry.$FailureDetail")
+        }
+        if (-not $StopMessageWritten) {
+            Write-Host ("[VIVIDCAM] Stopping FrameServer to update the " +
+                        "loaded camera source") -ForegroundColor Yellow
+            $StopMessageWritten = $true
+        }
+        ++$StopAttempts
+        try {
+            Stop-Service -InputObject $Service -ErrorAction Stop
+        } catch {
+            $LastStopFailure = $_.Exception.Message
+            try {
+                $Service = Get-Service -Name "FrameServer" -ErrorAction Stop
+            } catch {
+                throw "Could not query FrameServer state: $($_.Exception.Message)"
+            }
+            if ($Service.Status -eq "Stopped") { return }
+            if ([DateTime]::UtcNow -ge $Deadline) { continue }
+            if ($Service.Status -ne "StopPending") {
+                Start-Sleep -Milliseconds 250
+            }
+            continue
+        }
+        try {
+            $Service.WaitForStatus(
+                [System.ServiceProcess.ServiceControllerStatus]::Stopped,
+                $WaitSlice)
+            return
+        } catch {
+            continue
+        }
     }
-    if (-not $Service.CanStop) {
-        throw ("FrameServer is running but does not accept stop controls. " +
-               "Close applications using a camera and retry.")
-    }
-    Write-Host "[VIVIDCAM] Stopping FrameServer to update the loaded camera source" `
-        -ForegroundColor Yellow
-    Stop-Service -InputObject $Service -ErrorAction Stop
-    $Service.WaitForStatus(
-        [System.ServiceProcess.ServiceControllerStatus]::Stopped,
-        [TimeSpan]::FromSeconds(15))
 }
 
 function Invoke-VividCamDiagnosticsLifecycle {
@@ -147,7 +217,8 @@ function Assert-VividCamCameraIdentity {
     param([string]$ExpectedLink, [string]$ActualLink)
 
     if (-not [string]::Equals(
-            $ExpectedLink, $ActualLink, [StringComparison]::Ordinal)) {
+            $ExpectedLink, $ActualLink,
+            [StringComparison]::OrdinalIgnoreCase)) {
         throw ("Persistent virtual camera identity changed during deployment: " +
                "$ExpectedLink -> $ActualLink")
     }
