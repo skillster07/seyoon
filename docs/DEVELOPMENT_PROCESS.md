@@ -28,6 +28,16 @@ Native CTest 타깃은 Release 빌드에서도 `NDEBUG`를 해제하여 assertio
 
 ## 로컬 Windows 하드웨어 게이트
 
+`native/scripts/validate-windows.ps1` 전체 검증은 보호된 HKLM producer identity를 읽고
+필요하면 repair하므로 64-bit elevated PowerShell과 현재 validation 계정 SID를 요구합니다.
+스크립트는 HKLM COM source 경로, 설치된 source DLL·diagnostics·engine과 현재 Release
+build의 각 SHA-256, 정확한 5-value manifest와 현재 계정 `EngineUserSid`, protected owner·
+3-ACE DACL이 모두 일치할 때만 설치를 current로 인정합니다. 하나라도 다르면 all-users
+설치를 다시 실행하고 같은 계약을 재검증한 뒤 나머지 gate를 진행합니다. repair/reinstall이
+필요할 때 설치 engine이 실행 중이면 교체가 거부되므로 먼저 종료해야 합니다. 이 자동
+package 검증은 실제 설치 engine ↔ FrameServer handshake·heartbeat 통합 결과를 대신하지
+않습니다.
+
 ### Gate W1 — 카메라 캡처
 
 ```powershell
@@ -87,25 +97,59 @@ Native CTest 타깃은 Release 빌드에서도 `NDEBUG`를 해제하여 assertio
 - Windows Ctrl+C와 portable SIGINT·SIGTERM 처리기는 플래그만 기록하고 엔진 루프가 정상 종료함
 - Frame Server IPC 전에는 텔레메트리가 `frame_transport=unavailable`을 명시함
 
-### Gate W4b-2a — versioned control IPC
+### Gate W4b-2a — versioned control IPC·producer identity binding
 
 통과 기준:
 
 - `VCIP` 1.0 고정 64-byte little-endian header와 안정 메시지 ID golden test 통과
 - 잘못된 magic·major·type·길이·reserved·sequence·trailing bytes를 명확히 거부
 - 단일 source CLSID stable route를 engine/source가 공유하고 SHA-256 pipe token만 노출
-- 원격 client를 거부하고 logon SID·LocalService·SYSTEM만 허용하는 보호 DACL 적용
-- server가 `SourceHello` 뒤 peer SID를 확인하고 모든 impersonation 경로에서 복귀
-- source가 Hello 전 server PID·정확한 engine image·일반 사용자 token·session을 확인
-- engine은 기존 DACL을 보존하고 LocalService 직접 ACE에는 현재 process의
+- canonical production pipe의 보호 DACL은 SYSTEM과 정확한
+  `NT SERVICE\FrameServer` service SID만 허용
+- server가 `SourceHello` 뒤 client를 impersonate하여 LocalService user와 enabled
+  FrameServer service SID를 함께 확인하고 모든 경로에서 복귀
+- `GetNamedPipeClientProcessId`가 SCM이 보고한 실행 중 FrameServer PID와 일치해야 함
+- 비canonical 테스트 route만 SYSTEM·LocalService·현재 logon SID loopback 정책을 유지
+- 설치된 엔진 pipe가 있는 동안 일반 사용자 `--control-client-test`는 예상 접근 거부를
+  확인해 `[control-client-denial] win32=5 [valid]`와 종료 코드 0을 반환해야 함
+- all-users 설치가 source DLL과 sibling `vividcam_engine.exe`를
+  `C:\Program Files\VIVIDCAM\VirtualCamera`에 배치하고 해시를 재검증
+- `HKLM\Software\VIVIDCAM\VirtualCamera\ProducerIdentity`에 정확한
+  `SchemaVersion` DWORD 1, `Generation` QWORD, `EnginePath` SZ,
+  elevated installer 계정의 `EngineUserSid` SZ, `EngineSha256` 32-byte BINARY 기록
+- manifest key는 상속 없는 정확한 세 allow ACE만 가짐: SYSTEM·Administrators
+  `KEY_ALL_ACCESS`, FrameServer service SID `KEY_QUERY_VALUE | READ_CONTROL`
+- 설치 파일은 FrameServer 중지 전에 stage·hash하고, 중지 뒤 backup과 transactionally
+  교체·재검증; manifest는 `Generation=0` in-progress 뒤 최종 generation을 마지막에 기록
+- 설치 transaction 실패 시 이전 파일 해시와 manifest 값·형식·보안 descriptor를 정확히
+  rollback·재검증하고, uninstall은 FrameServer를 COM 등록 삭제까지 계속 중지
+- source가 Hello 전에 server PID와 일반 사용자 token을 검사하고 engine user SID가
+  manifest SID와 같은지, token·pipe session이 현재 active console session과 같은지,
+  token이 non-elevated·medium integrity 이하인지 확인
+- process image, manifest path와 source DLL sibling path는 각각 regular non-reparse disk
+  file이어야 하고 `GetFinalPathNameByHandle` 최종 경로까지 같아야 하며, 파일 SHA-256을
+  상수 시간 비교
+- source가 위 token identity·session·path·hash 전체를 매 producer heartbeat마다 재검증하고
+  실패 시 ACK 없이 연결을 끊음
+- engine은 기존 DACL을 보존하고 FrameServer service SID 직접 ACE에는 현재 process의
   `PROCESS_QUERY_LIMITED_INFORMATION`과 primary token의 `TOKEN_QUERY`만 추가하며,
   이 최소 권한 설정 실패 시 시작 거부
 - 엔진 선·후기동, heartbeat stale, 서버 종료·재시작 뒤 자동 재연결 통과
 - pending overlapped I/O를 취소하고 source Stop·Shutdown이 2초 안에 worker를 회수
 - producer 부재·protocol 오류·재연결 중에도 `RequestSample` 테스트 패턴 경로가 비차단 유지
-- frame payload·공유 handle 전송 전 code-signature 또는 per-camera nonce 신원 binding과
-  wrong identity·다른 session·service token negative test 추가
-- 복수 카메라·동시 로그인 지원 전 ACL-protected per-registration route ID 추가
+- identity binding은 VCIP 1.0 wire·message ID·payload를 바꾸지 않으며 HMAC secret을
+  추가하지 않음
+- manifest 형식·DACL mismatch의 fail-closed 처리 구현, 경로·SHA mismatch와 일반 사용자
+  canonical client 거부 negative test 통과; 실제 SID·active console·elevation·integrity와
+  다른 service principal은 설치 통합 gate에서 재확인
+- unsigned 개발 빌드의 설치 경로·SHA-256 pin은 중간 gate이며, 배포 전 Authenticode
+  signer SPKI pin과 필요 시 restricted broker/package 경계를 추가
+- Program Files·HKLM을 변경하는 관리자는 신뢰하며, 같은 사용자 runtime injection·process
+  hollowing은 현재 범위 밖. canonical pipe precreation availability DoS도 후속 완화 필요
+- 현재 active console session 한 개만 지원하며 RDP-only·fast user switching·복수 동시
+  session은 후속 broker·ACL-protected per-registration route 설계에서 지원
+- 자동 게이트 뒤 관리자 재설치, 설치된 엔진의 일반 사용자 실행, 실제 FrameServer
+  handshake·heartbeat를 확인해야 로컬 설치 통합 항목 완료
 
 ### Gate W4b — 방송 앱 가상 카메라 수신
 
@@ -159,13 +203,20 @@ Error code and full log:
 
 ## 현재 마일스톤
 
-- 2026-08-26 로컬 완료: W1 최선 60 FPS 캡처, W2 GPU surface, W3 1080p60 오프스크린 합성·NV12 변환, W4a COM activation·등록 수명주기, W4b-0 등록 소스 1080p60 테스트 패턴 수신 항목, W4b-1 일반 사용자 엔진 host bounded·Ctrl+C 종료, W4b-2a Windows control loopback·재연결 및 설치 DLL LocalService handshake·heartbeat
-- 검증 근거: `docs/validation/WINDOWS_W1_W4A_2026-08-26.md`, `docs/validation/WINDOWS_W4B0_2026-08-26.md`, `docs/validation/WINDOWS_W4B1_ENGINE_HOST_2026-08-26.md`, `docs/validation/WINDOWS_W4B2A_CONTROL_IPC_2026-08-26.md`
+- 2026-08-26 로컬 완료: W1 최선 60 FPS 캡처, W2 GPU surface, W3 1080p60 오프스크린 합성·NV12 변환, W4a COM activation·등록 수명주기, W4b-0 등록 소스 1080p60 테스트 패턴 수신 항목, W4b-1 일반 사용자 엔진 host bounded·Ctrl+C 종료, 기본 W4b-2a Windows control loopback·재연결 및 설치 DLL LocalService handshake·heartbeat
+- 검증 근거: `docs/validation/WINDOWS_W1_W4A_2026-08-26.md`, `docs/validation/WINDOWS_W4B0_2026-08-26.md`, `docs/validation/WINDOWS_W4B1_ENGINE_HOST_2026-08-26.md`, `docs/validation/WINDOWS_W4B2A_CONTROL_IPC_2026-08-26.md`, `docs/validation/WINDOWS_W4B2A_PRODUCER_IDENTITY_2026-08-26.md`
 - 입력 한계: 현재 캡처보드 입력은 720×480 60 FPS이며 네이티브 1080p60 입력은 별도 검증 필요
-- 현재 핵심 공백: frame payload 전 producer 신원 binding과 W4b-2b CPU frame bridge
+- 현재 핵심 공백: W4b-2b CPU latest-frame bridge와 실제 합성 프레임 전달
 - 로컬 후속: Windows 재부팅 뒤 W4b-0 영구 등록·재수신 확인
-- 클라우드 완료: W4b-2a versioned control codec, 보호된 Windows named pipe, LocalService
-  peer inspection 최소 권한, cross-process heartbeat·재연결·bounded shutdown
-- 클라우드 다음 범위: producer 신원 binding → W4b-2b CPU latest-frame IPC → D3D11 공유 텍스처 IPC
+- 구현·자동 검증 완료: installer account SID·Program Files engine final path·SHA-256
+  manifest, active console·non-elevated/medium token gate, heartbeat 재검증, FrameServer
+  service SID·SCM PID production gate, transactional installer rollback, 최소 process/token
+  ACE와 direct manifest/hash/path verifier test; Windows Release CTest 9/9, control
+  transport 5회 반복, Web production build 통과
+- 로컬 완료: 같은 active console 계정의 elevated 64-bit PowerShell에서
+  `validate-windows.ps1`가 generation 1 package 설치·재검증과 등록 source 1920x1080 NV12
+  60p 샘플 12개 수신을 통과. 이어 설치된 일반 사용자 엔진 ↔ 실제 FrameServer handshake
+  1회, heartbeat ACK 147/147, protocol error 0, rejected peer 0 확인
+- 클라우드 다음 범위: W4b-2b CPU latest-frame IPC → D3D11 공유 텍스처 IPC
 - 로컬 다음 상태: OBS 등록 장치 컬러바·control 수신 통과 후 SOOP·TikTok LIVE Studio까지 1080p60 W4b 확장
 - 병행 범위: D3D11 이미지·텍스트 렌더러, 데스크톱 UI bridge, 실제 1080p60 입력 및 장치 매트릭스

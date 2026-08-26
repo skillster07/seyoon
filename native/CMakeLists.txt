@@ -43,6 +43,7 @@ endif()
 if(WIN32)
   add_library(vividcam_platform
     src/platform/windows/control_channel_transport.cpp
+    src/platform/windows/producer_identity.cpp
     src/platform/windows/media_foundation_devices.cpp
     src/platform/windows/media_foundation_capture.cpp
     src/platform/windows/d3d11_gpu_context.cpp
@@ -66,6 +67,7 @@ if(WIN32)
 else()
   add_library(vividcam_platform
     src/platform/portable/control_channel_transport.cpp
+    src/platform/portable/producer_identity.cpp
     src/platform/portable/camera_devices.cpp
     src/platform/portable/camera_capture.cpp
     src/platform/portable/gpu_context.cpp
@@ -138,6 +140,20 @@ if(VIVIDCAM_BUILD_TESTS)
   add_test(NAME vividcam_producer_ipc_protocol_tests
     COMMAND vividcam_producer_ipc_protocol_tests)
 
+  add_executable(vividcam_producer_identity_tests
+    tests/producer_identity_tests.cpp)
+  target_link_libraries(vividcam_producer_identity_tests PRIVATE
+    vividcam_platform)
+  if(MSVC)
+    target_compile_options(vividcam_producer_identity_tests PRIVATE
+      /W4 /permissive- /UNDEBUG)
+  else()
+    target_compile_options(vividcam_producer_identity_tests PRIVATE
+      -Wall -Wextra -Wpedantic -Werror -UNDEBUG)
+  endif()
+  add_test(NAME vividcam_producer_identity_tests
+    COMMAND vividcam_producer_identity_tests)
+
   if(WIN32)
     add_executable(vividcam_control_channel_transport_tests
       tests/control_channel_transport_tests.cpp)
@@ -153,6 +169,18 @@ if(VIVIDCAM_BUILD_TESTS)
     add_test(NAME vividcam_control_channel_transport_tests
       COMMAND vividcam_control_channel_transport_tests)
     set_tests_properties(vividcam_control_channel_transport_tests PROPERTIES
+      TIMEOUT 20)
+
+    add_test(NAME vividcam_install_registry_helpers
+      COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+              -File ${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-install-registry-helpers.ps1)
+    set_tests_properties(vividcam_install_registry_helpers PROPERTIES
+      TIMEOUT 20)
+
+    add_test(NAME vividcam_camera_update_helpers
+      COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+              -File ${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-camera-update-helpers.ps1)
+    set_tests_properties(vividcam_camera_update_helpers PROPERTIES
       TIMEOUT 20)
   endif()
 

@@ -17,6 +17,8 @@ $ProgramFiles = [Environment]::GetFolderPath(
 $InstallDirectory = Join-Path $ProgramFiles "VIVIDCAM\VirtualCamera"
 $InstalledServer = Join-Path $InstallDirectory "vividcam_virtual_camera_source.dll"
 $InstalledDiagnostics = Join-Path $InstallDirectory "vividcam_diagnostics.exe"
+$InstalledEngine = Join-Path $InstallDirectory "vividcam_engine.exe"
+$ProducerIdentityKey = "HKLM:\Software\VIVIDCAM\VirtualCamera\ProducerIdentity"
 if ($AllUsers) {
     if ([Environment]::Is64BitOperatingSystem -and
         -not [Environment]::Is64BitProcess) {
@@ -29,55 +31,172 @@ if ($AllUsers) {
     }
 }
 
-function Stop-VividCamFrameServerServices {
-    $StoppedServices = @()
-    try {
-        foreach ($ServiceName in @("FrameServerMonitor", "FrameServer")) {
-            $Service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-            if ($null -eq $Service -or $Service.Status -eq "Stopped") { continue }
-            Write-Host "[VIVIDCAM] Stopping $ServiceName to remove the loaded camera source" `
-                -ForegroundColor Yellow
-            $StoppedServices += $ServiceName
+function Stop-VividCamFrameServer {
+    param([TimeSpan]$Timeout = ([TimeSpan]::FromSeconds(15)))
+
+    if ($Timeout -le [TimeSpan]::Zero) {
+        throw "FrameServer stop timeout must be positive"
+    }
+    $Deadline = [DateTime]::UtcNow.Add($Timeout)
+    $LastStopFailure = $null
+    $StopMessageWritten = $false
+    $StopAttempts = 0
+    $MaximumStopAttempts = 5
+    while ($true) {
+        try {
+            $Service = Get-Service -Name "FrameServer" -ErrorAction Stop
+        } catch {
+            throw "Could not query FrameServer state: $($_.Exception.Message)"
+        }
+        if ($Service.Status -eq "Stopped") { return }
+
+        $Remaining = $Deadline - [DateTime]::UtcNow
+        if ($Remaining -le [TimeSpan]::Zero) {
+            $FailureDetail = if ($null -ne $LastStopFailure) {
+                " Last service-control error: $LastStopFailure"
+            } else {
+                ""
+            }
+            throw ("FrameServer did not stop within $($Timeout.TotalSeconds) " +
+                   "seconds. Close applications using a camera and " +
+                   "retry.$FailureDetail")
+        }
+        $WaitSlice = [TimeSpan]::FromMilliseconds(
+            [Math]::Min(500.0, $Remaining.TotalMilliseconds))
+        if ($Service.Status -eq "StopPending") {
+            try {
+                $Service.WaitForStatus(
+                    [System.ServiceProcess.ServiceControllerStatus]::Stopped,
+                    $WaitSlice)
+                return
+            } catch {
+                continue
+            }
+        }
+        if ($Service.Status -eq "StartPending") {
+            try {
+                $Service.WaitForStatus(
+                    [System.ServiceProcess.ServiceControllerStatus]::Running,
+                    $WaitSlice)
+            } catch {}
+            continue
+        }
+        if (-not $Service.CanStop) {
+            throw ("FrameServer is running but does not accept stop controls. " +
+                   "Close applications using a camera and retry.")
+        }
+        if ($StopAttempts -ge $MaximumStopAttempts) {
+            $FailureDetail = if ($null -ne $LastStopFailure) {
+                " Last service-control error: $LastStopFailure"
+            } else {
+                ""
+            }
+            throw ("FrameServer remained running after " +
+                   "$MaximumStopAttempts stop attempts. Close applications " +
+                   "using a camera and retry.$FailureDetail")
+        }
+        if (-not $StopMessageWritten) {
+            Write-Host ("[VIVIDCAM] Stopping FrameServer to remove the " +
+                        "loaded camera source") -ForegroundColor Yellow
+            $StopMessageWritten = $true
+        }
+        ++$StopAttempts
+        try {
             Stop-Service -InputObject $Service -ErrorAction Stop
+        } catch {
+            $LastStopFailure = $_.Exception.Message
+            try {
+                $Service = Get-Service -Name "FrameServer" -ErrorAction Stop
+            } catch {
+                throw "Could not query FrameServer state: $($_.Exception.Message)"
+            }
+            if ($Service.Status -eq "Stopped") { return }
+            if ([DateTime]::UtcNow -ge $Deadline) { continue }
+            if ($Service.Status -ne "StopPending") {
+                Start-Sleep -Milliseconds 250
+            }
+            continue
+        }
+        try {
             $Service.WaitForStatus(
                 [System.ServiceProcess.ServiceControllerStatus]::Stopped,
-                [TimeSpan]::FromSeconds(15))
+                $WaitSlice)
+            return
+        } catch {
+            continue
         }
-    } catch {
-        Restart-VividCamFrameServerServices $StoppedServices
-        throw
     }
-    return $StoppedServices
 }
 
-function Restart-VividCamFrameServerServices {
-    param([string[]]$ServiceNames)
-    foreach ($ServiceName in @("FrameServer", "FrameServerMonitor")) {
-        if ($ServiceNames -notcontains $ServiceName) { continue }
-        $Service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-        if ($null -eq $Service -or $Service.Status -eq "Running") { continue }
-        Start-Service -InputObject $Service -ErrorAction Stop
+function Assert-VividCamFrameServerCanStop {
+    try {
+        $Service = Get-Service -Name "FrameServer" -ErrorAction Stop
+    } catch {
+        throw "Could not query FrameServer state: $($_.Exception.Message)"
+    }
+    if ($Service.Status -eq "Stopped" -or
+        $Service.Status -eq "StopPending") {
+        return
+    }
+    if ($Service.Status -eq "StartPending") {
         $Service.WaitForStatus(
             [System.ServiceProcess.ServiceControllerStatus]::Running,
             [TimeSpan]::FromSeconds(15))
+        $Service.Refresh()
+    }
+    if (-not $Service.CanStop) {
+        throw ("FrameServer is running but does not accept stop controls. " +
+               "Close applications using a camera and retry.")
     }
 }
 
-$BuildDiagnostics = Join-Path $BuildDirectory "Release\vividcam_diagnostics.exe"
-$CameraManager = if (Test-Path $InstalledDiagnostics) {
-    $InstalledDiagnostics
-} elseif (Test-Path $BuildDiagnostics) {
-    $BuildDiagnostics
-} else {
-    $null
+function Remove-VividCamActivationServerAfterUnload {
+    param([string]$Path)
+
+    $Deadline = [DateTime]::UtcNow.AddSeconds(15)
+    $WaitMessageWritten = $false
+    while ($true) {
+        try {
+            Remove-Item -LiteralPath $Path -Force
+            return
+        } catch {
+            $RemovalFailure = $_.Exception.Message
+            if ([DateTime]::UtcNow -ge $Deadline) {
+                throw ("Activation server remains loaded after the virtual " +
+                       "camera was removed. Close camera applications and " +
+                       "retry; if it remains locked, restart Windows. " +
+                       $RemovalFailure)
+            }
+            if (-not $WaitMessageWritten) {
+                Write-Host ("[VIVIDCAM] Waiting for Windows camera services " +
+                            "to release the activation server") `
+                    -ForegroundColor Yellow
+                $WaitMessageWritten = $true
+            }
+            Start-Sleep -Milliseconds 250
+        }
+    }
 }
-if (-not $CameraManager) {
-    throw ("Cannot remove the persistent virtual camera because vividcam_diagnostics.exe " +
-           "was not found in the install or build directory")
-}
-& $CameraManager --remove-camera
-if ($LASTEXITCODE -ne 0) {
-    throw "Persistent current-user virtual camera removal failed"
+
+function Test-InstalledEngineRunning {
+    param([string]$InstalledEnginePath)
+    foreach ($Process in @(Get-Process -Name "vividcam_engine" `
+                            -ErrorAction SilentlyContinue)) {
+        try {
+            if ($Process.Path -and [string]::Equals(
+                    [System.IO.Path]::GetFullPath($Process.Path),
+                    $InstalledEnginePath,
+                    [StringComparison]::OrdinalIgnoreCase)) {
+                return $true
+            }
+        } catch {
+            if (-not $Process.HasExited) {
+                throw ("Could not verify a running vividcam_engine process. " +
+                       "Stop all VIVIDCAM engines and retry.")
+            }
+        }
+    }
+    return $false
 }
 
 $Key = if ($AllUsers) {
@@ -85,34 +204,181 @@ $Key = if ($AllUsers) {
 } else {
     "HKCU:\Software\Classes\CLSID\$Clsid"
 }
-if (Test-Path $Key) {
-    Remove-Item -LiteralPath $Key -Recurse -Force
-    Write-Host "[VIVIDCAM] Removed $Scope activation server" -ForegroundColor Green
-} else {
-    Write-Host "[VIVIDCAM] $Scope activation server was not registered" -ForegroundColor Yellow
+
+$AllUsersPackageArtifactsPresent = $false
+if ($AllUsers) {
+    $AllUsersPackageArtifactsPresent =
+        (Test-Path -LiteralPath $InstalledServer) -or
+        (Test-Path -LiteralPath $InstalledDiagnostics) -or
+        (Test-Path -LiteralPath $InstalledEngine) -or
+        (Test-Path -LiteralPath $ProducerIdentityKey) -or
+        (Test-Path -LiteralPath $Key)
 }
 
-if ($AllUsers -and ((Test-Path $InstalledServer) -or
-                    (Test-Path $InstalledDiagnostics))) {
-    $StoppedFrameServerServices = @()
-    if (Test-Path $InstalledServer) {
-        $StoppedFrameServerServices = @(Stop-VividCamFrameServerServices)
+$BuildDiagnostics = Join-Path $BuildDirectory "Release\vividcam_diagnostics.exe"
+$CameraManager = if (Test-Path -LiteralPath $InstalledDiagnostics `
+                              -PathType Leaf) {
+    $InstalledDiagnostics
+} elseif (Test-Path -LiteralPath $BuildDiagnostics -PathType Leaf) {
+    $BuildDiagnostics
+} else {
+    $null
+}
+if ($AllUsers -and -not $AllUsersPackageArtifactsPresent -and
+    -not $CameraManager) {
+    if (Test-Path -LiteralPath $InstallDirectory) {
+        if (-not (Test-Path -LiteralPath $InstallDirectory `
+                                 -PathType Container)) {
+            throw "VIVIDCAM install directory path is not a directory: $InstallDirectory"
+        }
+        if ((Get-ChildItem -LiteralPath $InstallDirectory -Force).Count -ne 0) {
+            throw ("Cannot verify or remove the persistent virtual camera " +
+                   "because vividcam_diagnostics.exe is missing and the " +
+                   "install directory is not empty: $InstallDirectory")
+        }
+        Remove-Item -LiteralPath $InstallDirectory -Force
     }
+    Write-Host "[VIVIDCAM] $Scope activation server was not registered" `
+        -ForegroundColor Yellow
+    return
+}
+if (-not $CameraManager) {
+    throw ("Cannot remove the persistent virtual camera because vividcam_diagnostics.exe " +
+           "was not found in the install or build directory")
+}
+
+if ($AllUsers) {
+    if ((Test-Path -LiteralPath $InstallDirectory) -and
+        -not (Test-Path -LiteralPath $InstallDirectory -PathType Container)) {
+        throw "VIVIDCAM install directory path is not a directory: $InstallDirectory"
+    }
+    foreach ($InstalledPath in @(
+            $InstalledServer, $InstalledDiagnostics, $InstalledEngine)) {
+        if ((Test-Path -LiteralPath $InstalledPath) -and
+            -not (Test-Path -LiteralPath $InstalledPath -PathType Leaf)) {
+            throw "VIVIDCAM installed component path is not a file: $InstalledPath"
+        }
+    }
+    if ((Test-Path -LiteralPath $InstalledEngine -PathType Leaf) -and
+        (Test-InstalledEngineRunning $InstalledEngine)) {
+        throw ("Installed VIVIDCAM engine is running and cannot be removed. " +
+               "Stop it and retry: $InstalledEngine")
+    }
+    if (Test-Path -LiteralPath $InstalledServer -PathType Leaf) {
+        Assert-VividCamFrameServerCanStop
+    }
+}
+
+& $CameraManager --remove-camera
+$CameraRemovalExitCode = $LASTEXITCODE
+if ($CameraRemovalExitCode -ne 0) {
+    throw ("Persistent current-user virtual camera removal failed " +
+           "with exit code $CameraRemovalExitCode")
+}
+
+if (-not $AllUsers) {
+    if (Test-Path -LiteralPath $Key) {
+        Remove-Item -LiteralPath $Key -Recurse -Force
+        Write-Host "[VIVIDCAM] Removed $Scope activation server" `
+            -ForegroundColor Green
+    } else {
+        Write-Host "[VIVIDCAM] $Scope activation server was not registered" `
+            -ForegroundColor Yellow
+    }
+    return
+}
+
+if (Test-Path -LiteralPath $InstalledServer -PathType Leaf) {
     try {
-        if (Test-Path $InstalledServer) {
-            Remove-Item -LiteralPath $InstalledServer -Force
-        }
-        if (Test-Path $InstalledDiagnostics) {
-            Remove-Item -LiteralPath $InstalledDiagnostics -Force
-        }
-        if ((Get-ChildItem -LiteralPath $InstallDirectory -Force).Count -eq 0) {
-            Remove-Item -LiteralPath $InstallDirectory -Force
-        }
+        Stop-VividCamFrameServer
+        Remove-VividCamActivationServerAfterUnload -Path $InstalledServer
     } catch {
-        throw ("Activation server removal failed. Close applications using a camera " +
-               "and retry. " + $_.Exception.Message)
-    } finally {
-        Restart-VividCamFrameServerServices $StoppedFrameServerServices
+        $SourceRemovalFailure = $_.Exception.Message
+        $CameraRecoveryFailure = $null
+        try {
+            & $CameraManager --install-camera
+            $CameraRecoveryExitCode = $LASTEXITCODE
+            if ($CameraRecoveryExitCode -ne 0) {
+                throw ("Persistent current-user virtual camera recovery failed " +
+                       "with exit code $CameraRecoveryExitCode")
+            }
+            Write-Host ("[VIVIDCAM] Restored the persistent virtual camera " +
+                        "after the uninstall was interrupted") `
+                -ForegroundColor Yellow
+        } catch {
+            $CameraRecoveryFailure = $_.Exception.Message
+        }
+        $FailureMessage =
+            "VIVIDCAM activation server removal failed: $SourceRemovalFailure; " +
+            "installed diagnostics, engine, COM registration, and manifest were preserved for retry"
+        if ($null -ne $CameraRecoveryFailure) {
+            $FailureMessage += "; camera recovery failed: $CameraRecoveryFailure"
+        }
+        throw $FailureMessage
     }
-    Write-Host "[VIVIDCAM] Removed activation server file: $InstalledServer" -ForegroundColor Green
+}
+
+$RemovalErrors = @()
+if (Test-Path -LiteralPath $ProducerIdentityKey) {
+    try {
+        Remove-Item -LiteralPath $ProducerIdentityKey -Recurse -Force
+    } catch {
+        $RemovalErrors +=
+            "Producer identity manifest removal failed: $($_.Exception.Message)"
+    }
+}
+
+foreach ($InstalledFile in @($InstalledEngine)) {
+    if (-not (Test-Path -LiteralPath $InstalledFile)) { continue }
+    try {
+        Remove-Item -LiteralPath $InstalledFile -Force
+    } catch {
+        $RemovalErrors +=
+            "Installed file removal failed ($InstalledFile): $($_.Exception.Message)"
+    }
+}
+
+if (Test-Path -LiteralPath $Key) {
+    try {
+        Remove-Item -LiteralPath $Key -Recurse -Force
+    } catch {
+        $RemovalErrors +=
+            "COM registration removal failed ($Key): $($_.Exception.Message)"
+    }
+}
+
+if ($RemovalErrors.Count -gt 0) {
+    throw ("VIVIDCAM all-users removal was incomplete: " +
+           ($RemovalErrors -join " | ") +
+           "; installed diagnostics were preserved for retry")
+}
+
+if (Test-Path -LiteralPath $InstalledDiagnostics) {
+    try {
+        Remove-Item -LiteralPath $InstalledDiagnostics -Force
+    } catch {
+        throw ("VIVIDCAM all-users removal was incomplete: installed diagnostics " +
+               "removal failed ($InstalledDiagnostics): $($_.Exception.Message)")
+    }
+}
+
+try {
+    if ((Test-Path -LiteralPath $InstallDirectory) -and
+        (Get-ChildItem -LiteralPath $InstallDirectory -Force).Count -eq 0) {
+        Remove-Item -LiteralPath $InstallDirectory -Force
+    }
+} catch {
+    throw ("VIVIDCAM all-users removal was incomplete: " +
+           "empty install directory removal failed: $($_.Exception.Message)")
+}
+
+if (-not (Test-Path -LiteralPath $Key)) {
+    Write-Host "[VIVIDCAM] Removed $Scope activation server" -ForegroundColor Green
+}
+if (-not (Test-Path -LiteralPath $InstalledServer) -and
+    -not (Test-Path -LiteralPath $InstalledDiagnostics) -and
+    -not (Test-Path -LiteralPath $InstalledEngine) -and
+    -not (Test-Path -LiteralPath $ProducerIdentityKey)) {
+    Write-Host "[VIVIDCAM] Removed installed native components" `
+        -ForegroundColor Green
 }

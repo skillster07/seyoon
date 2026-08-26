@@ -31,10 +31,150 @@
 #include <iomanip>
 #include <iostream>
 #include <iterator>
+#include <sstream>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
+
+#ifdef _WIN32
+namespace {
+
+enum class VideoSourceLookupStatus { Found, Absent, Error };
+
+struct VideoSourceLookupResult {
+  VideoSourceLookupStatus status = VideoSourceLookupStatus::Absent;
+  std::wstring symbolic_link;
+  std::string error;
+};
+
+std::string diagnostic_hresult_error(const char* operation, HRESULT status) {
+  std::ostringstream message;
+  message << operation << " failed (HRESULT=0x" << std::hex << std::uppercase
+          << std::setw(8) << std::setfill('0')
+          << static_cast<std::uint32_t>(status) << ')';
+  return message.str();
+}
+
+VideoSourceLookupResult find_video_source_by_name_prefix(
+    std::wstring_view target_name) {
+  using Microsoft::WRL::ComPtr;
+
+  ComPtr<IMFAttributes> attributes;
+  const char* operation = "MFCreateAttributes(video sources)";
+  HRESULT status = MFCreateAttributes(&attributes, 1);
+  if (SUCCEEDED(status)) {
+    operation = "IMFAttributes::SetGUID(video source type)";
+    status = attributes->SetGUID(
+        MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+        MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
+  }
+  if (FAILED(status)) {
+    return {VideoSourceLookupStatus::Error, {},
+            diagnostic_hresult_error(operation, status)};
+  }
+
+  IMFActivate** devices = nullptr;
+  UINT32 device_count = 0;
+  status = MFEnumDeviceSources(attributes.Get(), &devices, &device_count);
+
+  const auto release_devices = [&]() noexcept {
+    if (devices != nullptr) {
+      for (UINT32 index = 0; index < device_count; ++index) {
+        if (devices[index] != nullptr) devices[index]->Release();
+      }
+    }
+    CoTaskMemFree(devices);
+  };
+
+  VideoSourceLookupResult result;
+  if (FAILED(status)) {
+    result.status = VideoSourceLookupStatus::Error;
+    result.error = diagnostic_hresult_error("MFEnumDeviceSources", status);
+    release_devices();
+    return result;
+  }
+  if (device_count != 0 && devices == nullptr) {
+    result.status = VideoSourceLookupStatus::Error;
+    result.error = "MFEnumDeviceSources returned a null device array";
+    release_devices();
+    return result;
+  }
+
+  for (UINT32 index = 0; index < device_count; ++index) {
+    if (devices[index] == nullptr) {
+      result.status = VideoSourceLookupStatus::Error;
+      result.error = "MFEnumDeviceSources returned a null device";
+      break;
+    }
+
+    wchar_t* friendly_name = nullptr;
+    UINT32 friendly_name_length = 0;
+    const HRESULT name_status = devices[index]->GetAllocatedString(
+        MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, &friendly_name,
+        &friendly_name_length);
+    if (FAILED(name_status) || friendly_name == nullptr) {
+      CoTaskMemFree(friendly_name);
+      result.status = VideoSourceLookupStatus::Error;
+      result.error = FAILED(name_status)
+                         ? diagnostic_hresult_error(
+                               "IMFActivate::GetAllocatedString(friendly name)",
+                               name_status)
+                         : "A video source returned a null friendly name";
+      break;
+    }
+    // Windows appends a platform suffix such as "(Windows Virtual Camera)"
+    // to the configured friendly name exposed by MFEnumDeviceSources. Match
+    // the configured portion exactly (ordinal, case-insensitive), consistent
+    // with the registered-source and control-route validators.
+    const bool name_matches =
+        friendly_name_length >= target_name.size() &&
+        CompareStringOrdinal(
+            friendly_name, static_cast<int>(target_name.size()),
+            target_name.data(), static_cast<int>(target_name.size()), TRUE) ==
+            CSTR_EQUAL;
+    CoTaskMemFree(friendly_name);
+    if (!name_matches) continue;
+
+    wchar_t* symbolic_link = nullptr;
+    UINT32 symbolic_link_length = 0;
+    const HRESULT link_status = devices[index]->GetAllocatedString(
+        MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK,
+        &symbolic_link, &symbolic_link_length);
+    if (FAILED(link_status) || symbolic_link == nullptr ||
+        symbolic_link_length == 0) {
+      CoTaskMemFree(symbolic_link);
+      result.status = VideoSourceLookupStatus::Error;
+      result.error =
+          FAILED(link_status)
+              ? diagnostic_hresult_error(
+                    "IMFActivate::GetAllocatedString(symbolic link)",
+                    link_status)
+              : "The VIVIDCAM video source returned an empty symbolic link";
+      break;
+    }
+
+    const std::wstring candidate_link(symbolic_link, symbolic_link_length);
+    CoTaskMemFree(symbolic_link);
+    if (result.status == VideoSourceLookupStatus::Absent) {
+      result.status = VideoSourceLookupStatus::Found;
+      result.symbolic_link = candidate_link;
+    } else if (result.symbolic_link != candidate_link) {
+      result.status = VideoSourceLookupStatus::Error;
+      result.symbolic_link.clear();
+      result.error =
+          "Multiple VIVIDCAM video sources have the same friendly name";
+      break;
+    }
+  }
+
+  release_devices();
+  return result;
+}
+
+} // namespace
+#endif
 
 int main(int argc, char** argv) {
   using namespace vividcam;
@@ -51,6 +191,8 @@ int main(int argc, char** argv) {
                                        "--control-client-test";
   const bool install_camera = argc > 1 &&
                               std::string_view(argv[1]) == "--install-camera";
+  const bool stop_camera = argc > 1 &&
+                           std::string_view(argv[1]) == "--stop-camera";
   const bool remove_camera = argc > 1 &&
                              std::string_view(argv[1]) == "--remove-camera";
   const bool capture_test = render_test ||
@@ -284,46 +426,45 @@ int main(int argc, char** argv) {
       std::cout << "[control-client] route unavailable: " << error << '\n';
       return 5;
     }
-
-    SourceControlClient client;
-    if (!client.start(std::move(route), error)) {
-      std::cout << "[control-client] start failed: " << error << '\n';
+    std::wstring pipe_name;
+    if (!make_vividcam_control_pipe_name(route, pipe_name, error)) {
+      std::cout << "[control-client-denial] pipe unavailable: " << error
+                << '\n';
       return 5;
     }
+
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::seconds{5};
-    ControlChannelTransportSnapshot status;
+    DWORD status = ERROR_FILE_NOT_FOUND;
+    bool denied = false;
     do {
-      status = client.snapshot();
-      if (status.connected && status.successful_handshakes >= 1 &&
-          status.heartbeat_acks >= 2) {
+      const DWORD flags = SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION;
+      const HANDLE pipe = CreateFileW(
+          pipe_name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+          OPEN_EXISTING, flags, nullptr);
+      if (pipe != INVALID_HANDLE_VALUE) {
+        CloseHandle(pipe);
+        status = ERROR_SUCCESS;
         break;
       }
+      status = GetLastError();
+      if (status == ERROR_ACCESS_DENIED) {
+        denied = true;
+        break;
+      }
+      if (status != ERROR_FILE_NOT_FOUND && status != ERROR_PIPE_BUSY) break;
       std::this_thread::sleep_for(std::chrono::milliseconds{20});
     } while (std::chrono::steady_clock::now() < deadline);
-    client.stop();
 
-    const bool passed = status.connected &&
-                        status.successful_handshakes >= 1 &&
-                        status.heartbeat_acks >= 2 &&
-                        status.protocol_errors == 0 &&
-                        status.rejected_peers == 0;
-    std::cout << "[control-client] handshakes="
-              << status.successful_handshakes
-              << " heartbeat_acks=" << status.heartbeat_acks
-              << " protocol_errors=" << status.protocol_errors
-              << " rejected_peers=" << status.rejected_peers
-              << (passed ? " [valid]\n" : " [invalid]\n");
-    if (!passed && !status.last_error.empty()) {
-      std::cout << "[control-client] last_error=" << status.last_error << '\n';
-    }
-    return passed ? 0 : 5;
+    std::cout << "[control-client-denial] win32=" << status
+              << (denied ? " [valid]\n" : " [invalid]\n");
+    return denied ? 0 : 5;
 #else
     std::cout << "[control-client] Windows named pipes are unavailable\n";
     return 5;
 #endif
   }
-  if (install_camera || remove_camera) {
+  if (install_camera || stop_camera || remove_camera) {
     std::string registration_error;
 #ifdef _WIN32
     const HRESULT com_status = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -359,17 +500,44 @@ int main(int argc, char** argv) {
             L"VIVIDCAM Virtual Camera",
             L"{B3F8E8E4-1C65-4C10-9DB4-AD2B780A6401}",
             VirtualCameraLifetime::System, VirtualCameraAccess::CurrentUser};
-        camera = create_virtual_camera_registration(config, registration_error);
-        if (camera.valid() &&
+        if (stop_camera) {
+#ifdef _WIN32
+          const auto existing_camera =
+              find_video_source_by_name_prefix(config.friendly_name);
+          if (existing_camera.status == VideoSourceLookupStatus::Absent) {
+            std::cout << "[persistent-camera] not-installed\n";
+            registration_result = 3;
+          } else if (existing_camera.status == VideoSourceLookupStatus::Error) {
+            registration_error = existing_camera.error;
+          } else {
+            camera =
+                create_virtual_camera_registration(config, registration_error);
+            if (camera.valid() &&
+                stop_registered_virtual_camera(camera, registration_error)) {
+              std::wcout << L"[persistent-camera] stopped link="
+                         << existing_camera.symbolic_link << L'\n';
+              registration_result = 0;
+            }
+          }
+#else
+          registration_error =
+              "Windows video source enumeration is unavailable";
+#endif
+        } else {
+          camera = create_virtual_camera_registration(config, registration_error);
+        }
+        if (remove_camera && camera.valid() &&
             remove_registered_virtual_camera(camera, registration_error)) {
           std::cout << "[persistent-camera] removed\n";
           registration_result = 0;
         }
       }
-      if (registration_result != 0) {
+      if (registration_result == 4) {
+        const char* operation = install_camera   ? "install/start"
+                                : stop_camera    ? "stop"
+                                                 : "remove";
         std::cout << "[persistent-camera] "
-                  << (install_camera ? "install/start" : "remove")
-                  << " failed: " << registration_error << '\n';
+                  << operation << " failed: " << registration_error << '\n';
       }
     }
 #ifdef _WIN32
