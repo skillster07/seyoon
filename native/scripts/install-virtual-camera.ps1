@@ -175,6 +175,44 @@ function Remove-EmptyCreatedRegistryKeyPaths {
     }
 }
 
+function Open-RegistryKeyWritable {
+    param([string]$RegistryPath)
+
+    $Hive = $null
+    $RelativePath = $null
+    if ($RegistryPath.StartsWith(
+            "HKLM:\", [StringComparison]::OrdinalIgnoreCase)) {
+        $Hive = [Microsoft.Win32.RegistryHive]::LocalMachine
+        $RelativePath = $RegistryPath.Substring("HKLM:\".Length)
+    } elseif ($RegistryPath.StartsWith(
+            "HKCU:\", [StringComparison]::OrdinalIgnoreCase)) {
+        $Hive = [Microsoft.Win32.RegistryHive]::CurrentUser
+        $RelativePath = $RegistryPath.Substring("HKCU:\".Length)
+    } else {
+        throw "Unsupported writable registry path: $RegistryPath"
+    }
+    if ([string]::IsNullOrWhiteSpace($RelativePath)) {
+        throw "Writable registry path must name a subkey: $RegistryPath"
+    }
+
+    $BaseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+        $Hive, [Microsoft.Win32.RegistryView]::Registry64)
+    try {
+        $WriteRights = [Security.AccessControl.RegistryRights]::QueryValues -bor
+            [Security.AccessControl.RegistryRights]::SetValue
+        $RegistryKey = $BaseKey.OpenSubKey(
+            $RelativePath,
+            [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,
+            $WriteRights)
+    } finally {
+        $BaseKey.Dispose()
+    }
+    if ($null -eq $RegistryKey) {
+        throw "Could not open registry key for writing: $RegistryPath"
+    }
+    return $RegistryKey
+}
+
 function Get-ProducerIdentityManifestSnapshot {
     param([string]$ManifestPath)
 
@@ -182,6 +220,7 @@ function Get-ProducerIdentityManifestSnapshot {
         Exists = $false
         Values = @()
         SecurityDescriptor = $null
+        SecurityDescriptorSddl = $null
     }
     if (-not (Test-Path -LiteralPath $ManifestPath)) {
         return $Snapshot
@@ -206,10 +245,16 @@ function Get-ProducerIdentityManifestSnapshot {
     }
     $Acl = Get-Acl -Path $ManifestPath
     [byte[]]$SecurityDescriptor = $Acl.GetSecurityDescriptorBinaryForm()
+    $SecuritySections = [Security.AccessControl.AccessControlSections]::Owner -bor
+        [Security.AccessControl.AccessControlSections]::Group -bor
+        [Security.AccessControl.AccessControlSections]::Access
+    $SecurityDescriptorSddl =
+        $Acl.GetSecurityDescriptorSddlForm($SecuritySections)
     return [pscustomobject]@{
         Exists = $true
         Values = $Values
         SecurityDescriptor = $SecurityDescriptor
+        SecurityDescriptorSddl = $SecurityDescriptorSddl
     }
 }
 
@@ -236,9 +281,10 @@ function Test-ProducerIdentityManifestSnapshot {
             return $false
         }
     }
-    return Test-ByteArraysEqual `
-        -Left $ActualSnapshot.SecurityDescriptor `
-        -Right $ExpectedSnapshot.SecurityDescriptor
+    return [string]::Equals(
+        $ActualSnapshot.SecurityDescriptorSddl,
+        $ExpectedSnapshot.SecurityDescriptorSddl,
+        [StringComparison]::Ordinal)
 }
 
 function Restore-ProducerIdentityManifestSnapshot {
@@ -258,18 +304,63 @@ function Restore-ProducerIdentityManifestSnapshot {
     }
 
     New-Item -Path $ManifestPath -Force | Out-Null
-    $Manifest = Get-Item -LiteralPath $ManifestPath
-    foreach ($ValueName in $Manifest.GetValueNames()) {
-        $Manifest.DeleteValue($ValueName, $false)
+    $Manifest = Open-RegistryKeyWritable -RegistryPath $ManifestPath
+    try {
+        $Manifest.SetValue("Generation", [Int64]0,
+            [Microsoft.Win32.RegistryValueKind]::QWord)
+        $Manifest.Flush()
+        foreach ($ValueName in $Manifest.GetValueNames()) {
+            $Manifest.DeleteValue($ValueName, $false)
+        }
+        foreach ($Entry in @($Snapshot.Values | Where-Object {
+                $_.Name -ine "Generation"
+            })) {
+            $Manifest.SetValue($Entry.Name, $Entry.Value, $Entry.Kind)
+        }
+        $Manifest.Flush()
+        foreach ($Entry in @($Snapshot.Values | Where-Object {
+                $_.Name -ieq "Generation"
+            })) {
+            $Manifest.SetValue($Entry.Name, $Entry.Value, $Entry.Kind)
+        }
+        $Manifest.Flush()
+    } finally {
+        $Manifest.Dispose()
     }
-    foreach ($Entry in $Snapshot.Values) {
-        $Manifest.SetValue($Entry.Name, $Entry.Value, $Entry.Kind)
-    }
-    $Manifest.Flush()
 
-    $Security = [Security.AccessControl.RegistrySecurity]::new()
-    $Security.SetSecurityDescriptorBinaryForm($Snapshot.SecurityDescriptor)
-    Set-Acl -LiteralPath $ManifestPath -AclObject $Security
+    $SecuritySections = [Security.AccessControl.AccessControlSections]::Owner -bor
+        [Security.AccessControl.AccessControlSections]::Group -bor
+        [Security.AccessControl.AccessControlSections]::Access
+    $SnapshotSecurity = [Security.AccessControl.RegistrySecurity]::new()
+    $SnapshotSecurity.SetSecurityDescriptorBinaryForm(
+        $Snapshot.SecurityDescriptor, $SecuritySections)
+    $ExpectedSecuritySddl =
+        $SnapshotSecurity.GetSecurityDescriptorSddlForm($SecuritySections)
+    $CurrentSecurity = Get-Acl -Path $ManifestPath
+    $CurrentSecuritySddl =
+        $CurrentSecurity.GetSecurityDescriptorSddlForm($SecuritySections)
+    if (-not [string]::Equals(
+            $CurrentSecuritySddl, $ExpectedSecuritySddl,
+            [StringComparison]::Ordinal)) {
+        $RestoreSections =
+            [Security.AccessControl.AccessControlSections]::Owner -bor
+            [Security.AccessControl.AccessControlSections]::Access
+        $GroupSection =
+            [Security.AccessControl.AccessControlSections]::Group
+        $ExpectedGroupSddl =
+            $SnapshotSecurity.GetSecurityDescriptorSddlForm($GroupSection)
+        $CurrentGroupSddl =
+            $CurrentSecurity.GetSecurityDescriptorSddlForm($GroupSection)
+        if (-not [string]::Equals(
+                $CurrentGroupSddl, $ExpectedGroupSddl,
+                [StringComparison]::Ordinal)) {
+            $RestoreSections = $RestoreSections -bor $GroupSection
+        }
+        $Security = [Security.AccessControl.RegistrySecurity]::new()
+        $Security.SetSecurityDescriptorBinaryForm(
+            $Snapshot.SecurityDescriptor, $RestoreSections)
+        Set-Acl -LiteralPath $ManifestPath -AclObject $Security
+    }
     if (-not (Test-ProducerIdentityManifestSnapshot `
             -ManifestPath $ManifestPath -ExpectedSnapshot $Snapshot)) {
         throw "Restored producer identity manifest does not match its snapshot"
@@ -475,63 +566,67 @@ function Set-ProducerIdentityManifest {
         throw "Producer identity manifest security verification failed"
     }
 
-    $Manifest = Get-Item -LiteralPath $ManifestPath
-    $ExpectedValueNames = @(
-        "SchemaVersion", "Generation", "EnginePath", "EngineSha256",
-        "EngineUserSid")
-    foreach ($ValueName in $Manifest.GetValueNames()) {
-        if ($ExpectedValueNames -notcontains $ValueName) {
-            $Manifest.DeleteValue($ValueName, $false)
+    $Manifest = Open-RegistryKeyWritable -RegistryPath $ManifestPath
+    try {
+        $ExpectedValueNames = @(
+            "SchemaVersion", "Generation", "EnginePath", "EngineSha256",
+            "EngineUserSid")
+        $Manifest.SetValue("Generation", [Int64]0,
+            [Microsoft.Win32.RegistryValueKind]::QWord)
+        $Manifest.Flush()
+        foreach ($ValueName in $Manifest.GetValueNames()) {
+            if ($ExpectedValueNames -notcontains $ValueName) {
+                $Manifest.DeleteValue($ValueName, $false)
+            }
         }
-    }
-    $Manifest.SetValue("Generation", [Int64]0,
-        [Microsoft.Win32.RegistryValueKind]::QWord)
-    $Manifest.Flush()
-    $Manifest.SetValue("SchemaVersion", [Int32]1,
-        [Microsoft.Win32.RegistryValueKind]::DWord)
-    $Manifest.SetValue("EnginePath", $EnginePath,
-        [Microsoft.Win32.RegistryValueKind]::String)
-    $Manifest.SetValue("EngineSha256", $EngineSha256,
-        [Microsoft.Win32.RegistryValueKind]::Binary)
-    $Manifest.SetValue("EngineUserSid", $EngineUserSid,
-        [Microsoft.Win32.RegistryValueKind]::String)
-    $Manifest.Flush()
-    $Manifest.SetValue("Generation", $Generation,
-        [Microsoft.Win32.RegistryValueKind]::QWord)
-    $Manifest.Flush()
-    $StoredHashMatches = Test-ByteArraysEqual `
-        -Left ([byte[]]$Manifest.GetValue("EngineSha256")) `
-        -Right $EngineSha256
-    $StoredValueNames = @($Manifest.GetValueNames())
-    $StoredValueNamesValid = $StoredValueNames.Count -eq
-        $ExpectedValueNames.Count
-    foreach ($ValueName in $ExpectedValueNames) {
-        if ($StoredValueNames -notcontains $ValueName) {
-            $StoredValueNamesValid = $false
+        $Manifest.SetValue("SchemaVersion", [Int32]1,
+            [Microsoft.Win32.RegistryValueKind]::DWord)
+        $Manifest.SetValue("EnginePath", $EnginePath,
+            [Microsoft.Win32.RegistryValueKind]::String)
+        $Manifest.SetValue("EngineSha256", $EngineSha256,
+            [Microsoft.Win32.RegistryValueKind]::Binary)
+        $Manifest.SetValue("EngineUserSid", $EngineUserSid,
+            [Microsoft.Win32.RegistryValueKind]::String)
+        $Manifest.Flush()
+        $Manifest.SetValue("Generation", $Generation,
+            [Microsoft.Win32.RegistryValueKind]::QWord)
+        $Manifest.Flush()
+        $StoredHashMatches = Test-ByteArraysEqual `
+            -Left ([byte[]]$Manifest.GetValue("EngineSha256")) `
+            -Right $EngineSha256
+        $StoredValueNames = @($Manifest.GetValueNames())
+        $StoredValueNamesValid = $StoredValueNames.Count -eq
+            $ExpectedValueNames.Count
+        foreach ($ValueName in $ExpectedValueNames) {
+            if ($StoredValueNames -notcontains $ValueName) {
+                $StoredValueNamesValid = $false
+            }
         }
-    }
 
-    if (-not $StoredValueNamesValid -or
-        $Manifest.GetValueKind("SchemaVersion") -ne
-            [Microsoft.Win32.RegistryValueKind]::DWord -or
-        $Manifest.GetValueKind("Generation") -ne
-            [Microsoft.Win32.RegistryValueKind]::QWord -or
-        $Manifest.GetValueKind("EnginePath") -ne
-            [Microsoft.Win32.RegistryValueKind]::String -or
-        $Manifest.GetValueKind("EngineSha256") -ne
-            [Microsoft.Win32.RegistryValueKind]::Binary -or
-        $Manifest.GetValueKind("EngineUserSid") -ne
-            [Microsoft.Win32.RegistryValueKind]::String -or
-        [Int32]$Manifest.GetValue("SchemaVersion") -ne 1 -or
-        [Int64]$Manifest.GetValue("Generation") -ne $Generation -or
-        -not [string]::Equals(
-            [string]$Manifest.GetValue("EnginePath"), $EnginePath,
-            [StringComparison]::OrdinalIgnoreCase) -or
-        -not [string]::Equals(
-            [string]$Manifest.GetValue("EngineUserSid"), $EngineUserSid,
-            [StringComparison]::Ordinal) -or
-        -not $StoredHashMatches) {
-        throw "Producer identity manifest verification failed"
+        if (-not $StoredValueNamesValid -or
+            $Manifest.GetValueKind("SchemaVersion") -ne
+                [Microsoft.Win32.RegistryValueKind]::DWord -or
+            $Manifest.GetValueKind("Generation") -ne
+                [Microsoft.Win32.RegistryValueKind]::QWord -or
+            $Manifest.GetValueKind("EnginePath") -ne
+                [Microsoft.Win32.RegistryValueKind]::String -or
+            $Manifest.GetValueKind("EngineSha256") -ne
+                [Microsoft.Win32.RegistryValueKind]::Binary -or
+            $Manifest.GetValueKind("EngineUserSid") -ne
+                [Microsoft.Win32.RegistryValueKind]::String -or
+            [Int32]$Manifest.GetValue("SchemaVersion") -ne 1 -or
+            [Int64]$Manifest.GetValue("Generation") -ne $Generation -or
+            -not [string]::Equals(
+                [string]$Manifest.GetValue("EnginePath"), $EnginePath,
+                [StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals(
+                [string]$Manifest.GetValue("EngineUserSid"), $EngineUserSid,
+                [StringComparison]::Ordinal) -or
+            -not $StoredHashMatches) {
+            throw "Producer identity manifest verification failed"
+        }
+    } finally {
+        $Manifest.Dispose()
     }
 }
 
