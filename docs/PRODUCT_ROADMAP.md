@@ -37,13 +37,37 @@ W3 1080p60 오프스크린 합성·NV12 변환, W4a COM activation·등록 수�
 consumer에서 1920×1080 NV12 60p 이동 컬러바 12개와 정확한 logical cadence를
 전달했습니다. 일반 사용자 세션의 W4b-1 `vividcam_engine`도 장시간 생명주기,
 heartbeat, 제한 시간·Ctrl+C 정상 종료 기반을 갖췄습니다. 재부팅 지속성,
-실제 1080p60 입력과 producer bridge,
+실제 1080p60 입력과 CPU latest-frame producer bridge,
 OBS·SOOP·TikTok LIVE Studio 수신 W4b는 남아 있습니다.
 
-W4b-2a versioned control은 VCIP 1.0 codec, current logon SID·LocalService 보호
-named pipe, cross-process heartbeat와 자동 재연결까지 구현했고 Windows loopback gate를
-통과했습니다. 설치된 Frame Server LocalService와도 handshake 1회, heartbeat ACK 69회를
-오류 없이 통과했습니다. 영상 frame transport는 다음 구현 범위입니다.
+기본 W4b-2a versioned control은 VCIP 1.0 codec, cross-process heartbeat와 자동
+재연결까지 구현했고 Windows loopback gate를 통과했습니다. 기존 설치 Frame Server
+LocalService와도 handshake 1회, heartbeat ACK 69회를 오류 없이 통과했습니다.
+
+그 뒤 frame transport 전 producer identity gate를 구현했습니다. all-users 설치기가
+`vividcam_engine.exe`를 source DLL과 같은 `Program Files` 디렉터리에 설치하고, 보호된
+HKLM manifest에 generation·절대 경로·SHA-256과 elevated installer 계정 SID를 고정합니다.
+파일은 FrameServer 중지 전에 stage·hash하고, 중지 뒤 transactionally 교체하며
+`Generation=0` in-progress marker와 최종 generation commit을 사용합니다. 실패 시 이전 파일과
+manifest를 정확히 rollback합니다. uninstall도 COM 등록을 지울 때까지 FrameServer를
+중지합니다.
+
+canonical pipe는 SYSTEM과 FrameServer service SID만 허용하고 LocalService user·enabled
+service SID·SCM PID를 함께 검증합니다. source는 engine token user가 installer SID인지,
+현재 active console session의 non-elevated·medium 이하 token인지 확인합니다. process image,
+설치 sibling과 manifest 경로가 regular non-reparse file로 같은 최종 경로를 가리키는지와
+파일 SHA-256을 handshake 전뿐 아니라 매 heartbeat마다 다시 확인합니다. engine의
+process/token에는 FrameServer SID의 최소 조회 권한만 추가합니다. 이 변경은 Windows Release
+CTest 7/7, control transport 5회 반복과 Web 검증을 통과했습니다. 다만 elevated
+`validate-windows.ps1` package 판정·필요 시 자동 repair와 새 manifest를 사용한 실제 Frame
+Server 통합 gate는 확인 대기이며 영상 frame transport는 다음 구현 범위입니다.
+
+현재 VCIP 1.0 wire는 변경하지 않았습니다. unsigned 개발 빌드에는 설치 경로·SHA-256 pin을
+중간 신뢰 기준으로 사용하고, 배포 서명이 준비되면 Authenticode signer SPKI pin과 필요 시
+restricted broker/package 경계를 추가합니다. 현재 Program Files·HKLM 관리자 경계를
+신뢰하며 same-user runtime injection·process hollowing과 canonical pipe precreation DoS는
+해결하지 않습니다. active console session 하나만 지원하고 RDP·복수 동시 session은
+후속 범위입니다.
 
 - Windows 카메라 캡처(Media Foundation)
 - Direct3D 기반 GPU 합성
@@ -124,11 +148,13 @@ named pipe, cross-process heartbeat와 자동 재연결까지 구현했고 Windo
 ## 다음 구현 백로그
 
 1. Windows 재부팅 후 W4b-0 영구 등록·재수신 확인
-2. frame transport 전 producer code-signature 또는 per-camera nonce 신원 binding과 negative test
+2. active console 계정으로 새 producer identity manifest를 elevated 설치한 실제 FrameServer handshake·heartbeat 확인
 3. CPU latest-frame IPC와 실제 합성 프레임 전달
 4. D3D11 공유 텍스처 IPC와 producer/source 재시작·재연결
-5. OBS → SOOP → TikTok LIVE Studio W4b 호환·재연결 검증
-6. 실제 1080p60 입력과 지원 장치 매트릭스(NVIDIA/AMD/Intel, 캡처 카드, 웹캠)
-7. 4시간 기본 파이프라인 안정성 기준선
-8. 얼굴 추적·세그멘테이션 SDK 자체 개발/라이선스 비교
-9. 웹 프로토타입 사용성 테스트와 이벤트 로깅은 네이티브 트랙과 병행
+5. Authenticode signer SPKI pin과 producer 격리 경계 보강
+6. canonical pipe precreation DoS 완화와 RDP·복수 사용자 session broker 설계
+7. OBS → SOOP → TikTok LIVE Studio W4b 호환·재연결 검증
+8. 실제 1080p60 입력과 지원 장치 매트릭스(NVIDIA/AMD/Intel, 캡처 카드, 웹캠)
+9. 4시간 기본 파이프라인 안정성 기준선
+10. 얼굴 추적·세그멘테이션 SDK 자체 개발/라이선스 비교
+11. 웹 프로토타입 사용성 테스트와 이벤트 로깅은 네이티브 트랙과 병행

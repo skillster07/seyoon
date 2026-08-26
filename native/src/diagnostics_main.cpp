@@ -284,40 +284,39 @@ int main(int argc, char** argv) {
       std::cout << "[control-client] route unavailable: " << error << '\n';
       return 5;
     }
-
-    SourceControlClient client;
-    if (!client.start(std::move(route), error)) {
-      std::cout << "[control-client] start failed: " << error << '\n';
+    std::wstring pipe_name;
+    if (!make_vividcam_control_pipe_name(route, pipe_name, error)) {
+      std::cout << "[control-client-denial] pipe unavailable: " << error
+                << '\n';
       return 5;
     }
+
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::seconds{5};
-    ControlChannelTransportSnapshot status;
+    DWORD status = ERROR_FILE_NOT_FOUND;
+    bool denied = false;
     do {
-      status = client.snapshot();
-      if (status.connected && status.successful_handshakes >= 1 &&
-          status.heartbeat_acks >= 2) {
+      const DWORD flags = SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION;
+      const HANDLE pipe = CreateFileW(
+          pipe_name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+          OPEN_EXISTING, flags, nullptr);
+      if (pipe != INVALID_HANDLE_VALUE) {
+        CloseHandle(pipe);
+        status = ERROR_SUCCESS;
         break;
       }
+      status = GetLastError();
+      if (status == ERROR_ACCESS_DENIED) {
+        denied = true;
+        break;
+      }
+      if (status != ERROR_FILE_NOT_FOUND && status != ERROR_PIPE_BUSY) break;
       std::this_thread::sleep_for(std::chrono::milliseconds{20});
     } while (std::chrono::steady_clock::now() < deadline);
-    client.stop();
 
-    const bool passed = status.connected &&
-                        status.successful_handshakes >= 1 &&
-                        status.heartbeat_acks >= 2 &&
-                        status.protocol_errors == 0 &&
-                        status.rejected_peers == 0;
-    std::cout << "[control-client] handshakes="
-              << status.successful_handshakes
-              << " heartbeat_acks=" << status.heartbeat_acks
-              << " protocol_errors=" << status.protocol_errors
-              << " rejected_peers=" << status.rejected_peers
-              << (passed ? " [valid]\n" : " [invalid]\n");
-    if (!passed && !status.last_error.empty()) {
-      std::cout << "[control-client] last_error=" << status.last_error << '\n';
-    }
-    return passed ? 0 : 5;
+    std::cout << "[control-client-denial] win32=" << status
+              << (denied ? " [valid]\n" : " [invalid]\n");
+    return denied ? 0 : 5;
 #else
     std::cout << "[control-client] Windows named pipes are unavailable\n";
     return 5;

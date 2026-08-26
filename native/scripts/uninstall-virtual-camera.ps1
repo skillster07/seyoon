@@ -17,6 +17,8 @@ $ProgramFiles = [Environment]::GetFolderPath(
 $InstallDirectory = Join-Path $ProgramFiles "VIVIDCAM\VirtualCamera"
 $InstalledServer = Join-Path $InstallDirectory "vividcam_virtual_camera_source.dll"
 $InstalledDiagnostics = Join-Path $InstallDirectory "vividcam_diagnostics.exe"
+$InstalledEngine = Join-Path $InstallDirectory "vividcam_engine.exe"
+$ProducerIdentityKey = "HKLM:\Software\VIVIDCAM\VirtualCamera\ProducerIdentity"
 if ($AllUsers) {
     if ([Environment]::Is64BitOperatingSystem -and
         -not [Environment]::Is64BitProcess) {
@@ -63,6 +65,27 @@ function Restart-VividCamFrameServerServices {
     }
 }
 
+function Test-InstalledEngineRunning {
+    param([string]$InstalledEnginePath)
+    foreach ($Process in @(Get-Process -Name "vividcam_engine" `
+                            -ErrorAction SilentlyContinue)) {
+        try {
+            if ($Process.Path -and [string]::Equals(
+                    [System.IO.Path]::GetFullPath($Process.Path),
+                    $InstalledEnginePath,
+                    [StringComparison]::OrdinalIgnoreCase)) {
+                return $true
+            }
+        } catch {
+            if (-not $Process.HasExited) {
+                throw ("Could not verify a running vividcam_engine process. " +
+                       "Stop all VIVIDCAM engines and retry.")
+            }
+        }
+    }
+    return $false
+}
+
 $BuildDiagnostics = Join-Path $BuildDirectory "Release\vividcam_diagnostics.exe"
 $CameraManager = if (Test-Path $InstalledDiagnostics) {
     $InstalledDiagnostics
@@ -85,34 +108,99 @@ $Key = if ($AllUsers) {
 } else {
     "HKCU:\Software\Classes\CLSID\$Clsid"
 }
-if (Test-Path $Key) {
-    Remove-Item -LiteralPath $Key -Recurse -Force
-    Write-Host "[VIVIDCAM] Removed $Scope activation server" -ForegroundColor Green
-} else {
-    Write-Host "[VIVIDCAM] $Scope activation server was not registered" -ForegroundColor Yellow
+
+if (-not $AllUsers) {
+    if (Test-Path -LiteralPath $Key) {
+        Remove-Item -LiteralPath $Key -Recurse -Force
+        Write-Host "[VIVIDCAM] Removed $Scope activation server" `
+            -ForegroundColor Green
+    } else {
+        Write-Host "[VIVIDCAM] $Scope activation server was not registered" `
+            -ForegroundColor Yellow
+    }
+    return
 }
 
-if ($AllUsers -and ((Test-Path $InstalledServer) -or
-                    (Test-Path $InstalledDiagnostics))) {
-    $StoppedFrameServerServices = @()
-    if (Test-Path $InstalledServer) {
-        $StoppedFrameServerServices = @(Stop-VividCamFrameServerServices)
+$AllUsersArtifactsPresent =
+    (Test-Path -LiteralPath $InstalledServer) -or
+    (Test-Path -LiteralPath $InstalledDiagnostics) -or
+    (Test-Path -LiteralPath $InstalledEngine) -or
+    (Test-Path -LiteralPath $ProducerIdentityKey) -or
+    (Test-Path -LiteralPath $Key)
+
+if (-not $AllUsersArtifactsPresent) {
+    Write-Host "[VIVIDCAM] $Scope activation server was not registered" `
+        -ForegroundColor Yellow
+    return
+}
+
+if ((Test-Path -LiteralPath $InstalledEngine) -and
+    (Test-InstalledEngineRunning $InstalledEngine)) {
+    throw ("Installed VIVIDCAM engine is running and cannot be removed. " +
+           "Stop it and retry: $InstalledEngine")
+}
+
+$StoppedFrameServerServices = @(Stop-VividCamFrameServerServices)
+$RemovalErrors = @()
+try {
+    if (Test-Path -LiteralPath $ProducerIdentityKey) {
+        try {
+            Remove-Item -LiteralPath $ProducerIdentityKey -Recurse -Force
+        } catch {
+            $RemovalErrors +=
+                "Producer identity manifest removal failed: $($_.Exception.Message)"
+        }
     }
+
+    foreach ($InstalledFile in @(
+            $InstalledServer, $InstalledDiagnostics, $InstalledEngine)) {
+        if (-not (Test-Path -LiteralPath $InstalledFile)) { continue }
+        try {
+            Remove-Item -LiteralPath $InstalledFile -Force
+        } catch {
+            $RemovalErrors +=
+                "Installed file removal failed ($InstalledFile): $($_.Exception.Message)"
+        }
+    }
+
+    if (Test-Path -LiteralPath $Key) {
+        try {
+            Remove-Item -LiteralPath $Key -Recurse -Force
+        } catch {
+            $RemovalErrors +=
+                "COM registration removal failed ($Key): $($_.Exception.Message)"
+        }
+    }
+
     try {
-        if (Test-Path $InstalledServer) {
-            Remove-Item -LiteralPath $InstalledServer -Force
-        }
-        if (Test-Path $InstalledDiagnostics) {
-            Remove-Item -LiteralPath $InstalledDiagnostics -Force
-        }
-        if ((Get-ChildItem -LiteralPath $InstallDirectory -Force).Count -eq 0) {
+        if ((Test-Path -LiteralPath $InstallDirectory) -and
+            (Get-ChildItem -LiteralPath $InstallDirectory -Force).Count -eq 0) {
             Remove-Item -LiteralPath $InstallDirectory -Force
         }
     } catch {
-        throw ("Activation server removal failed. Close applications using a camera " +
-               "and retry. " + $_.Exception.Message)
-    } finally {
-        Restart-VividCamFrameServerServices $StoppedFrameServerServices
+        $RemovalErrors +=
+            "Empty install directory removal failed: $($_.Exception.Message)"
     }
-    Write-Host "[VIVIDCAM] Removed activation server file: $InstalledServer" -ForegroundColor Green
+} finally {
+    try {
+        Restart-VividCamFrameServerServices $StoppedFrameServerServices
+    } catch {
+        $RemovalErrors += "FrameServer restart failed: $($_.Exception.Message)"
+    }
+}
+
+if ($RemovalErrors.Count -gt 0) {
+    throw ("VIVIDCAM all-users removal was incomplete: " +
+           ($RemovalErrors -join " | "))
+}
+
+if (-not (Test-Path -LiteralPath $Key)) {
+    Write-Host "[VIVIDCAM] Removed $Scope activation server" -ForegroundColor Green
+}
+if (-not (Test-Path -LiteralPath $InstalledServer) -and
+    -not (Test-Path -LiteralPath $InstalledDiagnostics) -and
+    -not (Test-Path -LiteralPath $InstalledEngine) -and
+    -not (Test-Path -LiteralPath $ProducerIdentityKey)) {
+    Write-Host "[VIVIDCAM] Removed installed native components" `
+        -ForegroundColor Green
 }

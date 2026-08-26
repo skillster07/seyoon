@@ -1,5 +1,6 @@
 #include "vividcam/control_channel_transport.hpp"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cassert>
@@ -10,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -40,11 +42,29 @@ struct KernelObjectAccessSummary {
   std::uint32_t allowed_ace_count{0};
 };
 
-KernelObjectAccessSummary inspect_local_service_access(HANDLE object) {
-  std::array<std::byte, SECURITY_MAX_SID_SIZE> sid_storage{};
-  DWORD sid_size = static_cast<DWORD>(sid_storage.size());
-  assert(CreateWellKnownSid(WinLocalServiceSid, nullptr, sid_storage.data(),
-                            &sid_size));
+std::vector<std::byte> frame_server_service_sid() {
+  constexpr wchar_t account[] = L"NT SERVICE\\FrameServer";
+  DWORD sid_bytes = 0;
+  DWORD domain_characters = 0;
+  SID_NAME_USE sid_type = SidTypeUnknown;
+  assert(!LookupAccountNameW(nullptr, account, nullptr, &sid_bytes, nullptr,
+                             &domain_characters, &sid_type));
+  assert(GetLastError() == ERROR_INSUFFICIENT_BUFFER);
+  assert(sid_bytes != 0);
+  std::vector<std::byte> sid(sid_bytes, std::byte{0});
+  std::vector<wchar_t> domain(std::max<DWORD>(domain_characters, 1U), L'\0');
+  DWORD sid_capacity = sid_bytes;
+  DWORD domain_capacity = static_cast<DWORD>(domain.size());
+  assert(LookupAccountNameW(nullptr, account, sid.data(), &sid_capacity,
+                            domain.data(), &domain_capacity, &sid_type));
+  assert(IsValidSid(sid.data()));
+  sid.resize(sid_capacity);
+  return sid;
+}
+
+KernelObjectAccessSummary inspect_sid_access(HANDLE object, PSID target_sid) {
+  assert(target_sid != nullptr);
+  assert(IsValidSid(target_sid));
 
   PACL dacl = nullptr;
   PSECURITY_DESCRIPTOR descriptor = nullptr;
@@ -63,14 +83,14 @@ KernelObjectAccessSummary inspect_local_service_access(HANDLE object) {
     if (header->AceType == ACCESS_ALLOWED_ACE_TYPE) {
       const auto* ace = static_cast<const ACCESS_ALLOWED_ACE*>(raw_ace);
       PSID sid = const_cast<DWORD*>(&ace->SidStart);
-      if (IsValidSid(sid) && EqualSid(sid, sid_storage.data())) {
+      if (IsValidSid(sid) && EqualSid(sid, target_sid)) {
         summary.allowed |= ace->Mask;
         ++summary.allowed_ace_count;
       }
     } else if (header->AceType == ACCESS_DENIED_ACE_TYPE) {
       const auto* ace = static_cast<const ACCESS_DENIED_ACE*>(raw_ace);
       PSID sid = const_cast<DWORD*>(&ace->SidStart);
-      if (IsValidSid(sid) && EqualSid(sid, sid_storage.data())) {
+      if (IsValidSid(sid) && EqualSid(sid, target_sid)) {
         summary.denied |= ace->Mask;
       }
     }
@@ -85,15 +105,41 @@ struct EngineQueryGrantSnapshot {
 };
 
 EngineQueryGrantSnapshot inspect_engine_query_grants() {
+  std::vector<std::byte> service_sid = frame_server_service_sid();
   const HANDLE process = OpenProcess(READ_CONTROL, FALSE, GetCurrentProcessId());
   assert(process != nullptr);
   HANDLE token = nullptr;
   assert(OpenProcessToken(GetCurrentProcess(), READ_CONTROL, &token));
-  const EngineQueryGrantSnapshot result{inspect_local_service_access(process),
-                                        inspect_local_service_access(token)};
+  const EngineQueryGrantSnapshot result{inspect_sid_access(process,
+                                                            service_sid.data()),
+                                        inspect_sid_access(token,
+                                                           service_sid.data())};
   CloseHandle(token);
   CloseHandle(process);
   return result;
+}
+
+bool current_user_is_denied_by_production_pipe(
+    std::wstring_view pipe_name, std::chrono::milliseconds timeout) {
+  const std::wstring owned_pipe_name(pipe_name);
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    const DWORD flags = SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION;
+    const HANDLE pipe = CreateFileW(
+        owned_pipe_name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+        OPEN_EXISTING, flags, nullptr);
+    if (pipe != INVALID_HANDLE_VALUE) {
+      CloseHandle(pipe);
+      return false;
+    }
+    const DWORD status = GetLastError();
+    if (status == ERROR_ACCESS_DENIED) return true;
+    if (status != ERROR_FILE_NOT_FOUND && status != ERROR_PIPE_BUSY) {
+      return false;
+    }
+    std::this_thread::sleep_for(10ms);
+  }
+  return false;
 }
 
 bool send_wrong_magic_header(std::wstring_view pipe_name,
@@ -184,6 +230,21 @@ int main() {
   assert(!error.empty());
 
   EngineQueryGrantSnapshot first_query_grants;
+
+  {
+    // The canonical endpoint is service-only. Even the interactive account
+    // that owns the engine process must not be able to occupy its pipe.
+    ProducerControlServer production_server;
+    assert(production_server.start(
+        std::wstring(vividcam::kVividCamPrimaryControlRoute),
+        "production-policy-test", error));
+    assert(wait_until(
+        [&] { return production_server.snapshot().connection_attempts >= 1; },
+        1s));
+    assert(current_user_is_denied_by_production_pipe(primary_pipe_name, 1s));
+    production_server.stop();
+    assert(!production_server.snapshot().running);
+  }
 
   {
     ProducerControlServer server;

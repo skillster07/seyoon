@@ -1,6 +1,7 @@
 #include "vividcam/control_channel_transport.hpp"
 
 #include "vividcam/control_channel_state.hpp"
+#include "vividcam/producer_identity.hpp"
 #include "vividcam/producer_ipc_protocol.hpp"
 
 #ifndef NOMINMAX
@@ -49,6 +50,12 @@ constexpr std::chrono::milliseconds kServerRetryDelay{100};
 constexpr DWORD kPipeBufferBytes =
     producer_ipc::kHeaderBytes + producer_ipc::kMaximumPayloadBytes;
 constexpr wchar_t kPipePrefix[] = L"\\\\.\\pipe\\VIVIDCAM.Control.v1.";
+constexpr wchar_t kFrameServerServiceName[] = L"FrameServer";
+constexpr wchar_t kFrameServerAccountName[] = L"NT SERVICE\\FrameServer";
+
+bool uses_production_peer_policy(std::wstring_view route) noexcept {
+  return route == kVividCamPrimaryControlRoute;
+}
 
 class UniqueHandle {
  public:
@@ -76,6 +83,22 @@ class UniqueHandle {
 
  private:
   HANDLE handle_{nullptr};
+};
+
+class UniqueServiceHandle {
+ public:
+  UniqueServiceHandle() noexcept = default;
+  explicit UniqueServiceHandle(SC_HANDLE handle) noexcept : handle_(handle) {}
+  ~UniqueServiceHandle() {
+    if (handle_ != nullptr) CloseServiceHandle(handle_);
+  }
+  UniqueServiceHandle(const UniqueServiceHandle&) = delete;
+  UniqueServiceHandle& operator=(const UniqueServiceHandle&) = delete;
+  [[nodiscard]] SC_HANDLE get() const noexcept { return handle_; }
+  [[nodiscard]] bool valid() const noexcept { return handle_ != nullptr; }
+
+ private:
+  SC_HANDLE handle_{nullptr};
 };
 
 class LocalAllocation {
@@ -476,6 +499,148 @@ bool current_process_identity(TokenIdentity& identity, std::string& error) {
   return query_token_identity(token.get(), identity, error);
 }
 
+bool resolve_frame_server_service_sid(std::vector<std::byte>& sid,
+                                      std::string& error) {
+  sid.clear();
+  DWORD sid_bytes = 0;
+  DWORD domain_characters = 0;
+  SID_NAME_USE sid_type = SidTypeUnknown;
+  if (LookupAccountNameW(nullptr, kFrameServerAccountName, nullptr, &sid_bytes,
+                         nullptr, &domain_characters, &sid_type)) {
+    error = "LookupAccountName(FrameServer size) unexpectedly succeeded";
+    return false;
+  }
+  const DWORD size_status = GetLastError();
+  if (size_status != ERROR_INSUFFICIENT_BUFFER || sid_bytes == 0) {
+    error = windows_error("LookupAccountName(FrameServer size)", size_status);
+    return false;
+  }
+
+  sid.assign(sid_bytes, std::byte{0});
+  std::vector<wchar_t> domain(std::max<DWORD>(domain_characters, 1U), L'\0');
+  DWORD sid_capacity = sid_bytes;
+  DWORD domain_capacity = static_cast<DWORD>(domain.size());
+  if (!LookupAccountNameW(nullptr, kFrameServerAccountName, sid.data(),
+                          &sid_capacity, domain.data(), &domain_capacity,
+                          &sid_type)) {
+    error = windows_error("LookupAccountName(FrameServer)", GetLastError());
+    sid.clear();
+    return false;
+  }
+  if (!IsValidSid(sid.data()) || sid_capacity == 0) {
+    error = "NT SERVICE\\FrameServer resolved to an invalid SID";
+    sid.clear();
+    return false;
+  }
+  sid.resize(sid_capacity);
+  error.clear();
+  return true;
+}
+
+bool parse_string_sid(std::wstring_view text, std::vector<std::byte>& sid,
+                      std::string& error) {
+  sid.clear();
+  if (text.empty()) {
+    error = "Producer identity user SID is empty";
+    return false;
+  }
+  const std::wstring owned_text(text);
+  PSID raw_sid = nullptr;
+  if (!ConvertStringSidToSidW(owned_text.c_str(), &raw_sid)) {
+    error = windows_error("ConvertStringSidToSid(EngineUserSid)",
+                          GetLastError());
+    return false;
+  }
+  LocalAllocation raw_sid_owner(reinterpret_cast<HLOCAL>(raw_sid));
+  return copy_sid(raw_sid, sid, error);
+}
+
+bool query_token_integrity_rid(HANDLE token, DWORD& integrity_rid,
+                               std::string& error) {
+  integrity_rid = 0;
+  std::vector<std::byte> storage;
+  if (!query_token_information(token, TokenIntegrityLevel, storage, error)) {
+    return false;
+  }
+  const auto* label =
+      reinterpret_cast<const TOKEN_MANDATORY_LABEL*>(storage.data());
+  PSID sid = label->Label.Sid;
+  if (sid == nullptr || !IsValidSid(sid)) {
+    error = "Producer token contains an invalid integrity SID";
+    return false;
+  }
+  const UCHAR count = *GetSidSubAuthorityCount(sid);
+  if (count == 0) {
+    error = "Producer token integrity SID has no RID";
+    return false;
+  }
+  integrity_rid = *GetSidSubAuthority(sid, count - 1);
+  error.clear();
+  return true;
+}
+
+bool token_has_enabled_group_sid(HANDLE token, PSID expected_sid,
+                                 bool& present, std::string& error) {
+  present = false;
+  if (expected_sid == nullptr || !IsValidSid(expected_sid)) {
+    error = "Expected service SID is invalid";
+    return false;
+  }
+  std::vector<std::byte> groups_storage;
+  if (!query_token_information(token, TokenGroups, groups_storage, error)) {
+    return false;
+  }
+  const auto* groups =
+      reinterpret_cast<const TOKEN_GROUPS*>(groups_storage.data());
+  for (DWORD index = 0; index < groups->GroupCount; ++index) {
+    const SID_AND_ATTRIBUTES& group = groups->Groups[index];
+    if (group.Sid == nullptr || !IsValidSid(group.Sid)) {
+      error = "Windows access token contains an invalid group SID";
+      return false;
+    }
+    if (EqualSid(group.Sid, expected_sid) &&
+        (group.Attributes & SE_GROUP_ENABLED) != 0 &&
+        (group.Attributes & SE_GROUP_USE_FOR_DENY_ONLY) == 0) {
+      present = true;
+      break;
+    }
+  }
+  error.clear();
+  return true;
+}
+
+bool query_frame_server_process_id(DWORD& process_id, std::string& error) {
+  process_id = 0;
+  UniqueServiceHandle manager(
+      OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT));
+  if (!manager.valid()) {
+    error = windows_error("OpenSCManager(FrameServer)", GetLastError());
+    return false;
+  }
+  UniqueServiceHandle service(OpenServiceW(
+      manager.get(), kFrameServerServiceName, SERVICE_QUERY_STATUS));
+  if (!service.valid()) {
+    error = windows_error("OpenService(FrameServer)", GetLastError());
+    return false;
+  }
+  SERVICE_STATUS_PROCESS status{};
+  DWORD returned = 0;
+  if (!QueryServiceStatusEx(
+          service.get(), SC_STATUS_PROCESS_INFO,
+          reinterpret_cast<LPBYTE>(&status), sizeof(status), &returned)) {
+    error = windows_error("QueryServiceStatusEx(FrameServer)", GetLastError());
+    return false;
+  }
+  if (status.dwCurrentState != SERVICE_RUNNING ||
+      status.dwProcessId == 0) {
+    error = "FrameServer service is not running with a valid process ID";
+    return false;
+  }
+  process_id = status.dwProcessId;
+  error.clear();
+  return true;
+}
+
 bool sid_to_string(const std::vector<std::byte>& sid, std::wstring& output,
                    std::string& error) {
   wchar_t* raw = nullptr;
@@ -490,23 +655,38 @@ bool sid_to_string(const std::vector<std::byte>& sid, std::wstring& output,
   return true;
 }
 
-bool build_pipe_security_descriptor(PSECURITY_DESCRIPTOR& descriptor,
+bool build_pipe_security_descriptor(bool production_policy,
+                                    PSECURITY_DESCRIPTOR& descriptor,
                                     std::string& error) {
   descriptor = nullptr;
-  TokenIdentity identity;
-  if (!current_process_identity(identity, error)) return false;
+  std::wstring sddl;
+  if (production_policy) {
+    std::vector<std::byte> frame_server_sid;
+    if (!resolve_frame_server_service_sid(frame_server_sid, error)) {
+      return false;
+    }
+    std::wstring frame_server_sid_string;
+    if (!sid_to_string(frame_server_sid, frame_server_sid_string, error)) {
+      return false;
+    }
+    // The canonical endpoint admits only SYSTEM and the concrete FrameServer
+    // service SID. LocalService by itself and the interactive logon SID are
+    // intentionally absent, so neither can occupy the production pipe.
+    sddl = L"D:P(A;;GA;;;SY)(A;;GA;;;" + frame_server_sid_string + L")";
+  } else {
+    TokenIdentity identity;
+    if (!current_process_identity(identity, error)) return false;
 
-  std::wstring logon_sid;
-  if (!sid_to_string(identity.logon_sid, logon_sid, error)) {
-    return false;
+    std::wstring logon_sid;
+    if (!sid_to_string(identity.logon_sid, logon_sid, error)) {
+      return false;
+    }
+
+    // Non-production routes retain the broad W4b-2a loopback policy used by
+    // diagnostics and transport tests.
+    sddl =
+        L"D:P(A;;GA;;;SY)(A;;GA;;;LS)(A;;GA;;;" + logon_sid + L")";
   }
-
-  // The explicit protected DACL intentionally has no Everyone or Anonymous
-  // access. The logon-SID ACE scopes normal clients to this sign-in session;
-  // a broad user-SID ACE is deliberately omitted so another terminal session
-  // using the same account cannot occupy the single handshake slot.
-  const std::wstring sddl =
-      L"D:P(A;;GA;;;SY)(A;;GA;;;LS)(A;;GA;;;" + logon_sid + L")";
   if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
           sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr)) {
     error = windows_error("ConvertStringSecurityDescriptor", GetLastError());
@@ -569,8 +749,8 @@ bool summarize_sid_aces(PACL dacl, PSID sid, SidAceSummary& summary,
   return true;
 }
 
-bool grant_kernel_object_access(HANDLE object, PSID local_service_sid,
-                                ACCESS_MASK requested_access,
+bool grant_kernel_object_access(HANDLE object, PSID service_sid,
+                                 ACCESS_MASK requested_access,
                                 const char* object_name,
                                 std::string& error) {
   PACL current_dacl = nullptr;
@@ -590,20 +770,21 @@ bool grant_kernel_object_access(HANDLE object, PSID local_service_sid,
   const std::string inspect_operation =
       std::string("inspect ") + object_name + " DACL";
   SidAceSummary current;
-  if (!summarize_sid_aces(current_dacl, local_service_sid, current,
+  if (!summarize_sid_aces(current_dacl, service_sid, current,
                            inspect_operation.c_str(), error)) {
     return false;
   }
   if ((current.denied & requested_access) != 0) {
     error = windows_error(
-        (std::string("LocalService denied by ") + object_name + " DACL")
+        (std::string("FrameServer service SID denied by ") + object_name +
+         " DACL")
             .c_str(),
         ERROR_ACCESS_DENIED);
     return false;
   }
   if ((current.allowed & ~requested_access) != 0) {
     error = windows_error(
-        (std::string("LocalService has excessive ") + object_name +
+        (std::string("FrameServer service SID has excessive ") + object_name +
          " access")
             .c_str(),
         ERROR_ACCESS_DENIED);
@@ -618,7 +799,7 @@ bool grant_kernel_object_access(HANDLE object, PSID local_service_sid,
   entry.grfAccessPermissions = requested_access;
   entry.grfAccessMode = GRANT_ACCESS;
   entry.grfInheritance = NO_INHERITANCE;
-  BuildTrusteeWithSidW(&entry.Trustee, local_service_sid);
+  BuildTrusteeWithSidW(&entry.Trustee, service_sid);
   entry.Trustee.TrusteeType = TRUSTEE_IS_USER;
 
   PACL updated_dacl = nullptr;
@@ -657,7 +838,7 @@ bool grant_kernel_object_access(HANDLE object, PSID local_service_sid,
   SidAceSummary verified;
   const std::string verify_operation =
       std::string("verify ") + object_name + " DACL";
-  if (!summarize_sid_aces(verified_dacl, local_service_sid, verified,
+  if (!summarize_sid_aces(verified_dacl, service_sid, verified,
                            verify_operation.c_str(), error)) {
     return false;
   }
@@ -672,15 +853,8 @@ bool grant_kernel_object_access(HANDLE object, PSID local_service_sid,
 }
 
 bool prepare_engine_peer_query_access(std::string& error) {
-  std::array<std::byte, SECURITY_MAX_SID_SIZE> local_service_storage{};
-  DWORD local_service_size =
-      static_cast<DWORD>(local_service_storage.size());
-  if (!CreateWellKnownSid(WinLocalServiceSid, nullptr,
-                          local_service_storage.data(),
-                          &local_service_size)) {
-    error = windows_error("CreateWellKnownSid(LocalService)", GetLastError());
-    return false;
-  }
+  std::vector<std::byte> frame_server_sid;
+  if (!resolve_frame_server_service_sid(frame_server_sid, error)) return false;
 
   // Use real handles with only the standard DACL rights needed below. Opening
   // both first avoids changing either object when handle preparation fails.
@@ -700,15 +874,15 @@ bool prepare_engine_peer_query_access(std::string& error) {
   }
   UniqueHandle token(raw_token);
 
-  PSID local_service_sid = local_service_storage.data();
+  PSID service_sid = frame_server_sid.data();
   if (!grant_kernel_object_access(
-          process.get(), local_service_sid, PROCESS_QUERY_LIMITED_INFORMATION,
+          process.get(), service_sid, PROCESS_QUERY_LIMITED_INFORMATION,
           "process", error)) {
     return false;
   }
   // This changes only the current primary token object's kernel DACL. It never
   // reads or writes TokenDefaultDacl, which controls defaults for future objects.
-  if (!grant_kernel_object_access(token.get(), local_service_sid, TOKEN_QUERY,
+  if (!grant_kernel_object_access(token.get(), service_sid, TOKEN_QUERY,
                                   "primary token", error)) {
     return false;
   }
@@ -737,13 +911,19 @@ class ImpersonationGuard {
   bool active_{false};
 };
 
-bool verify_connected_client(HANDLE pipe, std::uint32_t& process_id,
-                             std::string& error) {
+bool verify_connected_client(HANDLE pipe, bool production_policy,
+                             std::uint32_t& process_id, std::string& error) {
   process_id = 0;
-  // Capture the server identity before impersonating. An identification-level
-  // client token cannot be used to open the process token while impersonated.
   TokenIdentity current;
-  if (!current_process_identity(current, error)) return false;
+  std::vector<std::byte> frame_server_sid;
+  if (production_policy) {
+    if (!resolve_frame_server_service_sid(frame_server_sid, error)) return false;
+  } else {
+    // Capture the server identity before impersonating. An
+    // identification-level client token cannot be used to open the process
+    // token while impersonated.
+    if (!current_process_identity(current, error)) return false;
+  }
   if (!ImpersonateNamedPipeClient(pipe)) {
     error = windows_error("ImpersonateNamedPipeClient", GetLastError());
     return false;
@@ -766,6 +946,19 @@ bool verify_connected_client(HANDLE pipe, std::uint32_t& process_id,
           sid_is_well_known(peer_user, WinLocalServiceSid, well_known_error);
       if (!well_known_error.empty()) {
         verification_error = well_known_error;
+      } else if (production_policy) {
+        bool has_frame_server_sid = false;
+        if (!token_has_enabled_group_sid(token.get(), frame_server_sid.data(),
+                                         has_frame_server_sid,
+                                         verification_error)) {
+          accepted = false;
+        } else {
+          accepted = local_service && has_frame_server_sid;
+          if (!accepted) {
+            verification_error =
+                "named-pipe client is not the FrameServer service identity";
+          }
+        }
       } else {
         const bool local_system =
             sid_is_well_known(peer_user, WinLocalSystemSid, well_known_error);
@@ -803,6 +996,17 @@ bool verify_connected_client(HANDLE pipe, std::uint32_t& process_id,
     error = windows_error("GetNamedPipeClientProcessId", GetLastError());
     return false;
   }
+  if (production_policy) {
+    DWORD frame_server_process_id = 0;
+    if (!query_frame_server_process_id(frame_server_process_id, error)) {
+      return false;
+    }
+    if (client_process_id != frame_server_process_id) {
+      error = "named-pipe client PID does not match the running FrameServer "
+              "service";
+      return false;
+    }
+  }
   process_id = static_cast<std::uint32_t>(client_process_id);
   error.clear();
   return true;
@@ -821,8 +1025,8 @@ bool query_token_session_id(HANDLE token, DWORD& session_id,
   return true;
 }
 
-bool verify_connected_server(HANDLE pipe, std::uint32_t& process_id,
-                             std::string& error) {
+bool verify_connected_server(HANDLE pipe, bool production_policy,
+                             std::uint32_t& process_id, std::string& error) {
   process_id = 0;
   ULONG raw_process_id = 0;
   if (!GetNamedPipeServerProcessId(pipe, &raw_process_id)) {
@@ -835,9 +1039,9 @@ bool verify_connected_server(HANDLE pipe, std::uint32_t& process_id,
   }
   process_id = static_cast<std::uint32_t>(raw_process_id);
 
-  // This branch exists solely for the in-process loopback transport test. A
-  // real FrameServer-hosted source and vividcam_engine.exe cannot share a PID.
-  if (raw_process_id == GetCurrentProcessId()) {
+  // This branch exists solely for non-production loopback transport tests. A
+  // canonical endpoint must never bypass its installed path/hash policy.
+  if (!production_policy && raw_process_id == GetCurrentProcessId()) {
     error.clear();
     return true;
   }
@@ -857,12 +1061,13 @@ bool verify_connected_server(HANDLE pipe, std::uint32_t& process_id,
                           GetLastError());
     return false;
   }
-  const std::wstring_view full_path(path.data(), path_length);
+  const std::wstring full_path(path.data(), path_length);
   const std::size_t separator = full_path.find_last_of(L"\\/");
   const std::wstring basename(
       separator == std::wstring_view::npos ? full_path
                                            : full_path.substr(separator + 1));
-  if (_wcsicmp(basename.c_str(), L"vividcam_engine.exe") != 0) {
+  if (!production_policy &&
+      _wcsicmp(basename.c_str(), L"vividcam_engine.exe") != 0) {
     error = "Named-pipe server image is not vividcam_engine.exe";
     return false;
   }
@@ -914,8 +1119,65 @@ bool verify_connected_server(HANDLE pipe, std::uint32_t& process_id,
     return false;
   }
 
-  // Image/token/session checks reduce accidental or low-effort pipe squatting,
-  // but they are not nonce/signature-based cryptographic authentication.
+  if (production_policy) {
+    ProducerIdentityManifest manifest;
+    if (!load_installed_vividcam_producer_identity(manifest, error)) {
+      return false;
+    }
+    std::vector<std::byte> manifest_user_sid;
+    if (!parse_string_sid(manifest.engine_user_sid, manifest_user_sid, error)) {
+      return false;
+    }
+    if (EqualSid(identity.user_sid.data(), manifest_user_sid.data()) == FALSE) {
+      error = "Named-pipe server user does not match the installed producer "
+              "identity";
+      return false;
+    }
+    const DWORD active_console_session = WTSGetActiveConsoleSessionId();
+    if (active_console_session == 0xffffffffU || token_session_id == 0 ||
+        token_session_id != active_console_session) {
+      error = "Named-pipe server is not running in the active console user "
+              "session";
+      return false;
+    }
+    TOKEN_ELEVATION_TYPE elevation_type = TokenElevationTypeDefault;
+    DWORD elevation_bytes = 0;
+    if (!GetTokenInformation(token.get(), TokenElevationType, &elevation_type,
+                             sizeof(elevation_type), &elevation_bytes)) {
+      error = windows_error("GetTokenInformation(TokenElevationType)",
+                            GetLastError());
+      return false;
+    }
+    if (elevation_bytes != sizeof(elevation_type)) {
+      error = "Producer token returned an invalid elevation type length";
+      return false;
+    }
+    if (elevation_type == TokenElevationTypeFull) {
+      error = "Named-pipe server must not run with an elevated token";
+      return false;
+    }
+    DWORD integrity_rid = 0;
+    if (!query_token_integrity_rid(token.get(), integrity_rid, error)) {
+      return false;
+    }
+    if (integrity_rid > SECURITY_MANDATORY_MEDIUM_RID) {
+      error = "Named-pipe server must not run with elevated integrity";
+      return false;
+    }
+    std::wstring expected_package_path;
+    if (!current_module_sibling_vividcam_engine_path(expected_package_path,
+                                                      error)) {
+      return false;
+    }
+    if (!verify_vividcam_producer_image(manifest, full_path,
+                                        expected_package_path, error)) {
+      return false;
+    }
+  }
+
+  // Production additionally pins the observed image to the installed path and
+  // SHA-256 manifest. Non-production routes intentionally retain only the
+  // basename/token/session gate used by diagnostics.
   error.clear();
   return true;
 }
@@ -1138,6 +1400,7 @@ class ProducerControlServer::Impl {
     // Lifecycle operations always acquire lifecycle_mutex_ before mutex_. The
     // worker never acquires lifecycle_mutex_, so stop can hold it through join.
     std::scoped_lock lifecycle_lock(lifecycle_mutex_);
+    const bool production_policy = uses_production_peer_policy(route);
     std::wstring pipe_name;
     if (!make_vividcam_control_pipe_name(route, pipe_name, error)) return false;
     if (engine_instance_id.empty()) {
@@ -1169,6 +1432,7 @@ class ProducerControlServer::Impl {
 
     pipe_name_ = std::move(pipe_name);
     engine_instance_id_ = std::move(engine_instance_id);
+    production_policy_ = production_policy;
     snapshot_ = {};
     snapshot_.running = true;
     try {
@@ -1287,7 +1551,8 @@ class ProducerControlServer::Impl {
     // Windows associates ImpersonateNamedPipeClient with the security context
     // of the last message read. No Hello field is trusted before this check.
     std::uint32_t client_process_id = 0;
-    if (!verify_connected_client(pipe, client_process_id, session_error)) {
+    if (!verify_connected_client(pipe, production_policy_, client_process_id,
+                                 session_error)) {
       record_error(session_error, false, true);
       return false;
     }
@@ -1387,7 +1652,8 @@ class ProducerControlServer::Impl {
     while (!stop_requested(stop_event_.get())) {
       PSECURITY_DESCRIPTOR raw_descriptor = nullptr;
       std::string error;
-      if (!build_pipe_security_descriptor(raw_descriptor, error)) {
+      if (!build_pipe_security_descriptor(production_policy_, raw_descriptor,
+                                          error)) {
         record_error(error, false, false);
         if (WaitForSingleObject(stop_event_.get(),
                                 static_cast<DWORD>(kServerRetryDelay.count())) ==
@@ -1452,6 +1718,7 @@ class ProducerControlServer::Impl {
   std::thread worker_;
   std::wstring pipe_name_;
   std::string engine_instance_id_;
+  bool production_policy_{false};
   HANDLE active_pipe_{INVALID_HANDLE_VALUE};
 };
 
@@ -1461,6 +1728,7 @@ class SourceControlClient::Impl {
     // Lifecycle operations always acquire lifecycle_mutex_ before mutex_. The
     // worker never acquires lifecycle_mutex_, so stop can hold it through join.
     std::scoped_lock lifecycle_lock(lifecycle_mutex_);
+    const bool production_policy = uses_production_peer_policy(route);
     std::wstring pipe_name;
     if (!make_vividcam_control_pipe_name(route, pipe_name, error)) return false;
 
@@ -1481,6 +1749,7 @@ class SourceControlClient::Impl {
     }
 
     pipe_name_ = std::move(pipe_name);
+    production_policy_ = production_policy;
     snapshot_ = {};
     snapshot_.running = true;
     try {
@@ -1685,6 +1954,13 @@ class SourceControlClient::Impl {
                                    session_error)) {
         return IoResult::ProtocolFailure;
       }
+      if (production_policy_) {
+        std::uint32_t reverified_process_id = 0;
+        if (!verify_connected_server(pipe, true, reverified_process_id,
+                                     session_error)) {
+          return IoResult::Failed;
+        }
+      }
 
       ++client_sequence;
       MessageHeader acknowledgement;
@@ -1737,7 +2013,8 @@ class SourceControlClient::Impl {
       // unpublishes before UniqueHandle closes the underlying object.
       PipePublicationGuard pipe_publication(*this, pipe.get());
       std::uint32_t server_process_id = 0;
-      if (!verify_connected_server(pipe.get(), server_process_id, error)) {
+      if (!verify_connected_server(pipe.get(), production_policy_,
+                                   server_process_id, error)) {
         record_error(error, false, true);
         std::string state_error;
         if (!state.mark_connection_failed(error, Clock::now(), state_error)) {
@@ -1794,6 +2071,7 @@ class SourceControlClient::Impl {
   UniqueHandle stop_event_;
   std::thread worker_;
   std::wstring pipe_name_;
+  bool production_policy_{false};
   HANDLE active_pipe_{INVALID_HANDLE_VALUE};
 };
 
