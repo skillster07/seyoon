@@ -1,7 +1,8 @@
 /*  AHENG SEOUL | SC01 v03 | After Effects skeleton builder
     ------------------------------------------------------------------
     What this script builds (structure only, look is tuned by eye in AE):
-      - 16bpc + linear blending project settings
+      - 16bpc project (linear blending OFF since v03.1)
+      - nothing passes over the baby face (stencil / silhouette cutters)
       - 3D stage: nebula (far) / stars (mid) / baby window (hero) /
         Saber ring + orbit arcs / typography / foreground bokeh (near)
       - one-node camera with slow push-in, micro drift and depth of field
@@ -170,8 +171,8 @@
     slider(ctrl, "Ring Glow %", 100);
     slider(ctrl, "Bokeh Opacity", 10);
     slider(ctrl, "Bloom Mix %", 35);
-    slider(ctrl, "Text Start (s)", 4.6);          // narration line 2 (K("c791,c740") + " " + K("c2dc,c791,c774") + ", " + K("c138,c0c1,c744") + " " + K("bc14,afc9,b2c8,b2e4"))
-    slider(ctrl, "Streak Start (s)", 8.2);        // narration line 3 (K("c624,b298,c758") + " " + K("c791,c740") + " " + K("be5b,c774") + ", " + K("c6b0,b9ac,c758") + " " + K("b0b4,c77c,c744") + " " + K("bc1d,d799,b2c8,b2e4"))
+    slider(ctrl, "Text Start (s)", 4.6);          // narration line 2
+    slider(ctrl, "Streak Start (s)", 8.2);        // narration line 3
     L("OK      CTRL sliders");
 
     // ---------- SRC_BABY_PLATE (replace slot) ----------
