@@ -21,6 +21,9 @@
     var R = 420;                       // baby window radius
     var MAIN_NAME = "SC01_v03_MAIN";
 
+    // decode Korean stored as hex code points (keeps this file pure ASCII)
+    function K(h) { var a = h.split(","), s = "", i; for (i = 0; i < a.length; i++) { s += String.fromCharCode(parseInt(a[i], 16)); } return s; }
+
     var log = [];
     function L(s) { log.push(s); }
 
@@ -157,7 +160,7 @@
     L("OK      CTRL sliders");
 
     // ---------- SRC_BABY_PLATE (replace slot) ----------
-    var src = proj.items.addComp("SRC_BABY_PLATE  <- \uc2e4\uc81c \ucd2c\uc601\ubcf8\uc73c\ub85c \uad50\uccb4", W, H, 1, 14, FPS);
+    var src = proj.items.addComp(("SRC_BABY_PLATE  <- " + K("c2e4,c81c") + " " + K("cd2c,c601,bcf8,c73c,b85c") + " " + K("ad50,ccb4")), W, H, 1, 14, FPS);
     src.parentFolder = fSrc;
     var ph = solid(src, "PLACEHOLDER_BG", [0.2, 0.16, 0.14]);
     var phRamp = addFx(ph, "ADBE Ramp");
@@ -170,7 +173,7 @@
     }
     // slow drift so the placeholder is never a still frame
     ph.transform.scale.expression = 'var s=linear(time,0,thisComp.duration,100,108);[s,s];';
-    var phT = src.layers.addText("REPLACE: \uc544\uae30 \ud074\ub85c\uc988\uc5c5 \uc2e4\uc0ac | 4K \uad8c\uc7a5 | 14\ucd08 \uc774\uc0c1 | \uc5bc\uad74\uc744 \ud654\uba74 \uc911\uc559\uc5d0");
+    var phT = src.layers.addText(("REPLACE: " + K("c544,ae30") + " " + K("d074,b85c,c988,c5c5") + " " + K("c2e4,c0ac") + " | 4K " + K("ad8c,c7a5") + " | 14" + K("cd08") + " " + K("c774,c0c1") + " | " + K("c5bc,ad74,c744") + " " + K("d654,ba74") + " " + K("c911,c559,c5d0")));
     var phDoc = phT.property("ADBE Text Properties").property("ADBE Text Document").value;
     phDoc.fontSize = 34; phDoc.fillColor = [1, 1, 1]; phDoc.applyFill = true; phDoc.applyStroke = false;
     phDoc.justification = ParagraphJustification.CENTER_JUSTIFY;
@@ -236,12 +239,12 @@
         var l = solid(neb, name, [0, 0, 0]);
         var fn = addFx(l, "ADBE Fractal Noise");
         if (fn) {
-            setP(fn, ["Contrast", "\ub300\ube44"], 4, contrast, name + " Fractal Contrast=" + contrast);
-            setP(fn, ["Brightness", "\ubc1d\uae30"], 5, brightness, name + " Fractal Brightness=" + brightness);
-            setP(fn, ["Complexity", "\ubcf5\uc7a1\ub3c4"], 8, 7, name + " Fractal Complexity=7");
-            setP(fn, ["Uniform Scaling", "\uade0\uc77c \ube44\uc728"], null, 1, name + " Uniform Scaling on");
-            setP(fn, ["Scale", "\ube44\uc728"], null, scale, name + " Fractal Scale=" + scale);
-            setP(fn, ["Evolution", "\uc9c4\ud654"], 10, "time*" + evo, name + " Evolution=time*" + evo, true);
+            setP(fn, ["Contrast", (K("b300,be44"))], 4, contrast, name + " Fractal Contrast=" + contrast);
+            setP(fn, ["Brightness", (K("bc1d,ae30"))], 5, brightness, name + " Fractal Brightness=" + brightness);
+            setP(fn, ["Complexity", (K("bcf5,c7a1,b3c4"))], 8, 7, name + " Fractal Complexity=7");
+            setP(fn, ["Uniform Scaling", (K("ade0,c77c") + " " + K("be44,c728"))], null, 1, name + " Uniform Scaling on");
+            setP(fn, ["Scale", (K("be44,c728"))], null, scale, name + " Fractal Scale=" + scale);
+            setP(fn, ["Evolution", (K("c9c4,d654"))], 10, "time*" + evo, name + " Evolution=time*" + evo, true);
         }
         var tn = addFx(l, "ADBE Tint");
         if (tn) {
@@ -285,12 +288,12 @@
     var bl = solid(bok, "BOKEH_BLOBS", [0, 0, 0]);
     var bfn = addFx(bl, "ADBE Fractal Noise");
     if (bfn) {
-        setP(bfn, ["Contrast", "\ub300\ube44"], 4, 420, "BOKEH Fractal Contrast=420");
-        setP(bfn, ["Brightness", "\ubc1d\uae30"], 5, -115, "BOKEH Fractal Brightness=-115");
-        setP(bfn, ["Complexity", "\ubcf5\uc7a1\ub3c4"], 8, 1, "BOKEH Fractal Complexity=1");
-        setP(bfn, ["Uniform Scaling", "\uade0\uc77c \ube44\uc728"], null, 1, "BOKEH Uniform Scaling on");
-        setP(bfn, ["Scale", "\ube44\uc728"], null, 520, "BOKEH Fractal Scale=520");
-        setP(bfn, ["Evolution", "\uc9c4\ud654"], 10, "time*8", "BOKEH Evolution", true);
+        setP(bfn, ["Contrast", (K("b300,be44"))], 4, 420, "BOKEH Fractal Contrast=420");
+        setP(bfn, ["Brightness", (K("bc1d,ae30"))], 5, -115, "BOKEH Fractal Brightness=-115");
+        setP(bfn, ["Complexity", (K("bcf5,c7a1,b3c4"))], 8, 1, "BOKEH Fractal Complexity=1");
+        setP(bfn, ["Uniform Scaling", (K("ade0,c77c") + " " + K("be44,c728"))], null, 1, "BOKEH Uniform Scaling on");
+        setP(bfn, ["Scale", (K("be44,c728"))], null, 520, "BOKEH Fractal Scale=520");
+        setP(bfn, ["Evolution", (K("c9c4,d654"))], 10, "time*8", "BOKEH Evolution", true);
     }
     var bbl = addFx(bl, "ADBE Box Blur2");
     if (bbl) { bbl.property(1).setValue(28); bbl.property(2).setValue(3); }
@@ -405,8 +408,8 @@
         return t;
     }
     var ivory = [0.96, 0.94, 0.9];
-    var t1 = textLayer("\uc791\uc740 \uc2dc\uc791\uc774", fontKR, 66, 20, [190, 505], -160, ivory, 0, 1.4);
-    var t2 = textLayer("\uc138\uc0c1\uc744 \ubc14\uafc9\ub2c8\ub2e4", fontKRB, 104, 0, [184, 640], -160, ivory, 0.55, 1.6);
+    var t1 = textLayer((K("c791,c740") + " " + K("c2dc,c791,c774")), fontKR, 66, 20, [190, 505], -160, ivory, 0, 1.4);
+    var t2 = textLayer((K("c138,c0c1,c744") + " " + K("bc14,afc9,b2c8,b2e4")), fontKRB, 104, 0, [184, 640], -160, ivory, 0.55, 1.6);
     var t3 = textLayer("A SMALL BEGINNING, A BRIGHTER TOMORROW", fontEN, 19, 420, [194, 712], -160, [0.72, 0.8, 0.95], 1.8, 1.4);
     t3.transform.opacity.expression = 'linear(time,10.9,11.7,70,0);';
 
