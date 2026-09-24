@@ -15,7 +15,7 @@
     Requires: AE 2022+ recommended. Saber (Video Copilot, free) optional.
 */
 (function () {
-    var VERSION = "SC01 v03.1";
+    var VERSION = "SC01 v03.2";
     var W = 1920, H = 1080, FPS = 30, DUR = 12;
     var ZOOM = 2666.7;                 // 50mm-equivalent zoom for a 1920 comp
     var HERO = [1340, 470];            // circle centre in MAIN (from storyboard cut 01)
@@ -108,10 +108,21 @@
 
     // effect-free solid whose mask cuts the layers below it in the same comp
     // (SILHOUETTE_ALPHA = punch a hole, STENCIL_ALPHA = keep only inside)
+    // the AE scripting enum is spelled SILHOUETE_ALPHA (one T); accept both spellings
+    var BM_SILHOUETTE = (BlendingMode.SILHOUETE_ALPHA !== undefined) ? BlendingMode.SILHOUETE_ALPHA : BlendingMode.SILHOUETTE_ALPHA;
+    var BM_STENCIL = BlendingMode.STENCIL_ALPHA;
+
     function alphaCutter(comp, name, cx, cy, rx, ry, feather, mode) {
         var c = comp.layers.addSolid([1, 1, 1], name, comp.width, comp.height, 1, comp.duration);
         addMask(c, ellipseShape(cx, cy, rx, ry), feather);
-        c.blendingMode = mode;
+        try {
+            if (mode === undefined) { throw new Error("blend mode undefined"); }
+            c.blendingMode = mode;
+        } catch (e) {
+            // a plain white solid would cover the frame, so switch it off and report
+            c.enabled = false;
+            L("MANUAL  " + name + ": set Mode to Stencil/Silhouette Alpha by hand, then turn the layer on (" + e + ")");
+        }
         return c;
     }
 
@@ -231,7 +242,7 @@
         coreRamp.property(4).setValue(col(0, 0, 0));
         coreRamp.property(5).setValue(2);
     }
-    alphaCutter(win, "STENCIL_WINDOW", HERO[0], HERO[1], R + 30, R + 30, 110, BlendingMode.STENCIL_ALPHA);
+    alphaCutter(win, "STENCIL_WINDOW", HERO[0], HERO[1], R + 30, R + 30, 110, BM_STENCIL);
     core.transform.opacity.expression = CT + '("Warm Core Opacity")(1)*linear(time,' + CT + '("Reveal Start (s)")(1)+1.5,' + CT + '("Reveal Start (s)")(1)+3.5,0,1);';
     L("OK      PRE_BABY_WINDOW");
 
@@ -274,7 +285,7 @@
     var warmC = proj.items.addComp("PRE_WARM_SPILL", W, H, 1, DUR, FPS);
     warmC.parentFolder = fPre;
     nebulaLayer(warmC, "NEBULA_WARM", col(0.9, 0.62, 0.38), 100, BlendingMode.NORMAL, 500, 16, 120, -55);
-    alphaCutter(warmC, "STENCIL_AROUND_BABY", HERO[0], HERO[1], 900, 650, 500, BlendingMode.STENCIL_ALPHA);
+    alphaCutter(warmC, "STENCIL_AROUND_BABY", HERO[0], HERO[1], 900, 650, 500, BM_STENCIL);
     var warmL = neb.layers.add(warmC);
     warmL.blendingMode = BlendingMode.ADD;
     warmL.transform.opacity.expression = '9*' + CT + '("Nebula Opacity")(1)/100;';
@@ -322,7 +333,7 @@
     bl.blendingMode = BlendingMode.ADD;
     bl.transform.opacity.expression = 'comp("' + MAIN_NAME + '").layer("CTRL").effect("Bokeh Opacity")(1);';
     // keep the baby face clear: bokeh never passes over the window (approx. screen position through the z -700 scale)
-    alphaCutter(bok, "HOLE_OVER_BABY", 1410, 455, 620, 620, 320, BlendingMode.SILHOUETTE_ALPHA);
+    alphaCutter(bok, "HOLE_OVER_BABY", 1410, 455, 620, 620, 320, BM_SILHOUETTE);
     L("OK      PRE_FG_BOKEH");
 
     // ---------- MAIN: 3D stage ----------
