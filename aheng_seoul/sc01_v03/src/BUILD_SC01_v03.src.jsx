@@ -14,7 +14,7 @@
     Requires: AE 2022+ recommended. Saber (Video Copilot, free) optional.
 */
 (function () {
-    var VERSION = "SC01 v03.0";
+    var VERSION = "SC01 v03.1";
     var W = 1920, H = 1080, FPS = 30, DUR = 12;
     var ZOOM = 2666.7;                 // 50mm-equivalent zoom for a 1920 comp
     var HERO = [1340, 470];            // circle centre in MAIN (from storyboard cut 01)
@@ -105,6 +105,15 @@
         return candidates[candidates.length - 1];
     }
 
+    // effect-free solid whose mask cuts the layers below it in the same comp
+    // (SILHOUETTE_ALPHA = punch a hole, STENCIL_ALPHA = keep only inside)
+    function alphaCutter(comp, name, cx, cy, rx, ry, feather, mode) {
+        var c = comp.layers.addSolid([1, 1, 1], name, comp.width, comp.height, 1, comp.duration);
+        addMask(c, ellipseShape(cx, cy, rx, ry), feather);
+        c.blendingMode = mode;
+        return c;
+    }
+
     function slider(ctrl, name, v) {
         var e = addFx(ctrl, "ADBE Slider Control", name);
         e.property(1).setValue(v);
@@ -124,7 +133,8 @@
 
     // ---------- project settings ----------
     try { proj.bitsPerChannel = 16; L("OK      project 16bpc"); } catch (e1) { L("MANUAL  set 16bpc: " + e1); }
-    try { proj.linearBlending = true; L("OK      blend colors using 1.0 gamma (linear blending)"); } catch (e2) { L("MANUAL  linear blending: " + e2); }
+    // v03.1: linear blending OFF. With many ADD layers it pushed the whole frame to white.
+    try { proj.linearBlending = false; L("OK      linear blending off (predictable ADD/Glow)"); } catch (e2) { L("MANUAL  linear blending off: " + e2); }
 
     // ---------- folders ----------
     var fRoot = proj.items.addFolder("AHENG_SC01_v03");
@@ -152,8 +162,13 @@
     slider(ctrl, "Baby X Offset", 0);
     slider(ctrl, "Baby Y Offset", 0);
     slider(ctrl, "Nebula Opacity", 100);
-    slider(ctrl, "Warm Core Opacity", 30);
-    slider(ctrl, "Text Start (s)", 4.6);
+    slider(ctrl, "Warm Core Opacity", 18);
+    // v03.1 look masters: start low, raise by eye
+    slider(ctrl, "Ring Glow %", 100);
+    slider(ctrl, "Bokeh Opacity", 10);
+    slider(ctrl, "Bloom Mix %", 35);
+    slider(ctrl, "Text Start (s)", 4.6);          // narration line 2 "작은 시작이, 세상을 바꿉니다"
+    slider(ctrl, "Streak Start (s)", 8.2);        // narration line 3 "오늘의 작은 빛이, 우리의 내일을 밝힙니다"
     L("OK      CTRL sliders");
 
     // ---------- SRC_BABY_PLATE (replace slot) ----------
@@ -163,9 +178,9 @@
     var phRamp = addFx(ph, "ADBE Ramp");
     if (phRamp) {
         phRamp.property(1).setValue([W / 2, H / 2]);
-        phRamp.property(2).setValue(col(0.95, 0.8, 0.68));
+        phRamp.property(2).setValue(col(0.42, 0.34, 0.30));
         phRamp.property(3).setValue([W / 2 + 520, H / 2]);
-        phRamp.property(4).setValue(col(0.18, 0.13, 0.12));
+        phRamp.property(4).setValue(col(0.07, 0.06, 0.06));
         phRamp.property(5).setValue(2);
     }
     // slow drift so the placeholder is never a still frame
@@ -215,7 +230,7 @@
         coreRamp.property(4).setValue(col(0, 0, 0));
         coreRamp.property(5).setValue(2);
     }
-    addMask(core, ellipseShape(HERO[0], HERO[1], R, R), 120);
+    alphaCutter(win, "STENCIL_WINDOW", HERO[0], HERO[1], R + 30, R + 30, 110, BlendingMode.STENCIL_ALPHA);
     core.transform.opacity.expression = CT + '("Warm Core Opacity")(1)*linear(time,' + CT + '("Reveal Start (s)")(1)+1.5,' + CT + '("Reveal Start (s)")(1)+3.5,0,1);';
     L("OK      PRE_BABY_WINDOW");
 
@@ -232,8 +247,8 @@
         nr.property(5).setValue(2);
     }
 
-    function nebulaLayer(name, tintWhite, opacity, mode, scale, evo, contrast, brightness) {
-        var l = solid(neb, name, [0, 0, 0]);
+    function nebulaLayer(comp, name, tintWhite, opacity, mode, scale, evo, contrast, brightness) {
+        var l = solid(comp, name, [0, 0, 0]);
         var fn = addFx(l, "ADBE Fractal Noise");
         if (fn) {
             setP(fn, ["Contrast", "대비"], 4, contrast, name + " Fractal Contrast=" + contrast);
@@ -252,9 +267,16 @@
         l.transform.opacity.expression = opacity + '*' + CT + '("Nebula Opacity")(1)/100;';
         return l;
     }
-    nebulaLayer("NEBULA_COOL", col(0.28, 0.46, 0.95), 55, BlendingMode.SCREEN, 900, 10, 150, -25);
-    var warm = nebulaLayer("NEBULA_WARM_SPILL", col(1.0, 0.72, 0.45), 22, BlendingMode.ADD, 500, 16, 180, -35);
-    addMask(warm, ellipseShape(HERO[0], HERO[1], 900, 650), 500);
+    // v03.1: darker, sparser nebula (v03.0 values blew out to white)
+    nebulaLayer(neb, "NEBULA_COOL", col(0.10, 0.20, 0.48), 32, BlendingMode.SCREEN, 900, 10, 115, -48);
+    // warm spill lives in its own comp so a stencil can limit it to the area around the baby
+    var warmC = proj.items.addComp("PRE_WARM_SPILL", W, H, 1, DUR, FPS);
+    warmC.parentFolder = fPre;
+    nebulaLayer(warmC, "NEBULA_WARM", col(0.9, 0.62, 0.38), 100, BlendingMode.NORMAL, 500, 16, 120, -55);
+    alphaCutter(warmC, "STENCIL_AROUND_BABY", HERO[0], HERO[1], 900, 650, 500, BlendingMode.STENCIL_ALPHA);
+    var warmL = neb.layers.add(warmC);
+    warmL.blendingMode = BlendingMode.ADD;
+    warmL.transform.opacity.expression = '9*' + CT + '("Nebula Opacity")(1)/100;';
     L("OK      PRE_BG_NEBULA (Fractal values need eye check)");
 
     // ---------- PRE_BG_STARS ----------
@@ -286,7 +308,7 @@
     var bfn = addFx(bl, "ADBE Fractal Noise");
     if (bfn) {
         setP(bfn, ["Contrast", "대비"], 4, 420, "BOKEH Fractal Contrast=420");
-        setP(bfn, ["Brightness", "밝기"], 5, -115, "BOKEH Fractal Brightness=-115");
+        setP(bfn, ["Brightness", "밝기"], 5, -165, "BOKEH Fractal Brightness=-165");
         setP(bfn, ["Complexity", "복잡도"], 8, 1, "BOKEH Fractal Complexity=1");
         setP(bfn, ["Uniform Scaling", "균일 비율"], null, 1, "BOKEH Uniform Scaling on");
         setP(bfn, ["Scale", "비율"], null, 520, "BOKEH Fractal Scale=520");
@@ -297,7 +319,9 @@
     var btn = addFx(bl, "ADBE Tint");
     if (btn) { btn.property(1).setValue(col(0, 0, 0)); btn.property(2).setValue(col(0.85, 0.8, 1.0)); }
     bl.blendingMode = BlendingMode.ADD;
-    bl.transform.opacity.setValue(35);
+    bl.transform.opacity.expression = 'comp("' + MAIN_NAME + '").layer("CTRL").effect("Bokeh Opacity")(1);';
+    // keep the baby face clear: bokeh never passes over the window (approx. screen position through the z -700 scale)
+    alphaCutter(bok, "HOLE_OVER_BABY", 1410, 455, 620, 620, 320, BlendingMode.SILHOUETTE_ALPHA);
     L("OK      PRE_FG_BOKEH");
 
     // ---------- MAIN: 3D stage ----------
@@ -338,6 +362,7 @@
             if (sb) {
                 setP(sb, ["Glow Color"], null, glowCol, name + " Saber Glow Color");
                 setP(sb, ["Glow Intensity"], null, intensity, name + " Saber Glow Intensity=" + intensity);
+                setP(sb, ["Glow Intensity"], null, 'value*thisComp.layer("CTRL").effect("Ring Glow %")(1)/100;', name + " Saber Glow Intensity -> CTRL Ring Glow %", true);
                 setP(sb, ["Core Size"], null, coreSize, name + " Saber Core Size=" + coreSize);
                 setP(sb, ["Core Type"], null, 2, name + " Saber Core Type=Layer Masks");
                 L("VERIFY  " + name + ": Saber > Customize Core > Core Type = Layer Masks");
@@ -350,12 +375,36 @@
     }
     var rs = CT.replace('comp("' + MAIN_NAME + '").', 'thisComp.');
     var drawOn = 'var st=' + rs + '("Reveal Start (s)")(1);var t=clamp((time-st)/2.4,0,1);100*(1-Math.pow(1-t,3));';
-    saberLayer("LIGHT_RING_HERO", R + 6, 0, 0, 0, col(1.0, 0.82, 0.6), 22, 1.2, drawOn, null, 0);
-    saberLayer("ORBIT_A", R + 230, 40, 72, -14, col(0.45, 0.65, 1.0), 9, 0.6,
+    saberLayer("LIGHT_RING_HERO", R + 6, 0, 0, 0, col(1.0, 0.82, 0.6), 9, 1.0, drawOn, null, 0);
+    saberLayer("ORBIT_A", R + 230, 40, 72, -14, col(0.45, 0.65, 1.0), 3, 0.5,
         'var st=' + rs + '("Reveal Start (s)")(1);linear(time,st+0.8,st+3.6,0,62);', null, 7);
-    saberLayer("ORBIT_B", R + 420, -60, 78, 10, col(0.55, 0.72, 1.0), 6, 0.45,
+    saberLayer("ORBIT_B", R + 420, -60, 78, 10, col(0.55, 0.72, 1.0), 2, 0.4,
         'var st=' + rs + '("Reveal Start (s)")(1);linear(time,st+1.4,st+4.4,0,38);', null, -4);
-    L("OK      Saber ring + 2 orbits (verify Core Type / Composite in Saber UI)");
+    // v03.1: bottom light streak kept from the approved v02 (foreshadows the path to the star in SC14)
+    var streak = main.layers.addSolid([0, 0, 0], "LIGHT_STREAK_BOTTOM", W, H, 1, DUR);
+    streak.threeDLayer = true;
+    streak.blendingMode = BlendingMode.ADD;
+    streak.motionBlur = true;
+    streak.transform.position.setValue([W / 2, H / 2, 20]);
+    var sp = new Shape();
+    sp.vertices = [[-120, 1010], [880, 925], [2040, 975]];
+    sp.inTangents = [[0, 0], [-420, 18], [-380, -20]];
+    sp.outTangents = [[380, -30], [420, -18], [0, 0]];
+    sp.closed = false;
+    addMask(streak, sp, 0, MaskMode.NONE);
+    if (saberMN) {
+        var ssb = addFx(streak, saberMN, "Saber");
+        if (ssb) {
+            setP(ssb, ["Glow Color"], null, col(1.0, 0.8, 0.58), "STREAK Saber Glow Color");
+            setP(ssb, ["Glow Intensity"], null, 3, "STREAK Saber Glow Intensity=3");
+            setP(ssb, ["Glow Intensity"], null, 'value*thisComp.layer("CTRL").effect("Ring Glow %")(1)/100;', "STREAK Glow -> CTRL", true);
+            setP(ssb, ["Core Size"], null, 0.4, "STREAK Saber Core Size=0.4");
+            setP(ssb, ["Core Type"], null, 2, "STREAK Saber Core Type=Layer Masks");
+            setP(ssb, ["End Offset"], null, 'var st=' + rs + '("Streak Start (s)")(1);var t=clamp((time-st)/2.8,0,1);100*(1-Math.pow(1-t,3));', "STREAK draw-on", true);
+            L("VERIFY  LIGHT_STREAK_BOTTOM: Core Type = Layer Masks, thin warm line under the text");
+        }
+    }
+    L("OK      Saber ring + 2 orbits + bottom streak (verify Core Type / Composite in Saber UI)");
 
     // ---------- typography ----------
     var fontKR = pickFont(["NotoSerifKR-Light", "NanumMyeongjo", "AppleMyungjo"]);
@@ -414,7 +463,7 @@
     var ls = addFx(t2, "CC Light Sweep");
     if (ls) {
         setP(ls, ["Center"], 1,
-            'var r=sourceRectAtTime(time,false);var t=ease(time,7.6,9.2,0,1);\n' +
+            'var r=sourceRectAtTime(time,false);var t=ease(time,6.6,7.8,0,1);\n' +
             '[r.left+linear(t,0,1,-300,r.width+300),r.top+r.height/2];', "Light Sweep Center", true);
         setP(ls, ["Width"], 4, 70, "Light Sweep Width=70");
         setP(ls, ["Sweep Intensity"], 5, 60, "Light Sweep Intensity=60");
@@ -434,9 +483,11 @@
             setP(g, ["Glow Intensity"], 4, intensity, name + " intensity=" + intensity);
         }
     }
-    glow("GLOW_TIGHT", 70, 12, 0.6);
-    glow("GLOW_MID", 62, 60, 0.45);
-    glow("GLOW_WIDE", 55, 260, 0.3);
+    // v03.1: bloom only catches real highlights; overall amount via CTRL "Bloom Mix %"
+    glow("GLOW_TIGHT", 88, 10, 0.35);
+    glow("GLOW_MID", 84, 50, 0.22);
+    glow("GLOW_WIDE", 80, 200, 0.12);
+    bloom.transform.opacity.expression = 'thisComp.layer("CTRL").effect("Bloom Mix %")(1);';
 
     var vig = solid(main, "FX_VIGNETTE", [0, 0, 0]);
     var vm = addMask(vig, ellipseShape(W / 2 + 120, H / 2, W * 0.62, H * 0.66), 520);
