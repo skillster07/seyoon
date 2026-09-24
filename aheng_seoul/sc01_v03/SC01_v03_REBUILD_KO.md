@@ -98,7 +98,7 @@ PPT처럼 보이는 이유는 효과가 적어서가 아닙니다. **모든 요�
 CTRL            슬라이더 16개 (렌더 안 됨)
 CAM             원노드, Zoom 2666.7(50mm), DOF → BABY_WINDOW에 초점
 FX_GRAIN        노이즈 2.5% (조정 레이어)
-FX_BLOOM        Glow ×3: TIGHT 12px / MID 60px / WIDE 260px (조정 레이어)
+FX_BLOOM        Glow ×3: TIGHT 10px / MID 50px / WIDE 200px, 불투명도 = CTRL Bloom Mix % (조정 레이어)
 FX_VIGNETTE     반전 타원 마스크, 페더 520, 55%
 TEXT ×3         3D, z −160
 LIGHT_STREAK_BOTTOM Saber, 열린 곡선 마스크, z 20
@@ -142,7 +142,7 @@ BG_NEBULA       그라디언트 + Fractal Noise + PRE_WARM_SPILL(스텐실), z 3
 
 1. After Effects에서 **새 프로젝트**를 엽니다.
 2. 환경 설정 > 스크립팅 및 표현식 > "스크립트가 파일을 작성하고 네트워크에 액세스하도록 허용"을 켭니다.
-3. 파일 > 스크립트 > 스크립트 파일 실행 > `BUILD_SC01_v03.jsx`를 선택합니다.
+3. 파일 > 스크립트 > 스크립트 파일 실행 > `BUILD_SC01_v03_1.jsx`(Drive 파일명, 저장소에서는 `BUILD_SC01_v03.jsx`)를 선택합니다.
 4. 스크립트와 같은 폴더에 `AHENG_SC01_v03_EDITABLE.aep`와 `BUILD_LOG_SC01_v03_*.txt`가 생깁니다.
 5. 로그의 `MANUAL`/`VERIFY` 항목을 6장 표로 확인합니다.
 6. 첫 프리뷰는 Half 해상도로 봅니다. 16bpc, DOF, 모션 블러가 켜져 있어 Full 해상도는 무겁습니다.
