@@ -9,10 +9,14 @@ g.MaskMode=en(['NONE','ADD','SUBTRACT','INTERSECT','LIGHTEN','DARKEN','DIFFERENC
 g.AutoOrientType=en(['ALONG_PATH','CAMERA_OR_POINT_OF_INTEREST','CHARACTERS_TOWARD_CAMERA','NO_AUTO_ORIENT']);
 g.ParagraphJustification=en(['CENTER_JUSTIFY','FULL_JUSTIFY_LASTLINE_CENTER','FULL_JUSTIFY_LASTLINE_FULL','FULL_JUSTIFY_LASTLINE_LEFT','FULL_JUSTIFY_LASTLINE_RIGHT','LEFT_JUSTIFY','RIGHT_JUSTIFY']);
 g.PropertyType=en(['PROPERTY','INDEXED_GROUP','NAMED_GROUP']);
-g.app=mk('app');g.Shape=function(){};g.File=function(){return mk('File')};g.$={fileName:'/x/BUILD.jsx'};g.alert=m=>console.log('ALERT:\n'+m);
+g.CloseOptions=en(['DO_NOT_SAVE_CHANGES','PROMPT_TO_SAVE_CHANGES','SAVE_CHANGES']);
+g.app=mk('app');g.Shape=function(){};g.File=function(){return mk('File')};g.$={fileName:'/x/BUILD.jsx',global:g};
+// --auto: same globals RUN_AUTO_SC01_v04.jsx sets before evaluating the builder
+if(process.argv.includes('--auto')){g.AHENG_AUTO=true;g.AHENG_OUT='/x/AHENG_SC01_v04_EDITABLE.aep';console.log('mode: automation');}
+g.alert=m=>console.log('ALERT:\n'+m);
 const src=fs.readFileSync(process.argv[2],'utf8');
 // report every enum member referenced that is not documented
-const bad=[...src.matchAll(/\b(BlendingMode|MaskMode|AutoOrientType|ParagraphJustification|PropertyType)\.([A-Z_]+)/g)].filter(m=>!(m[2] in g[m[1]])).map(m=>m[0]);
+const bad=[...src.matchAll(/\b(BlendingMode|MaskMode|AutoOrientType|ParagraphJustification|PropertyType|CloseOptions)\.([A-Z_]+)/g)].filter(m=>!(m[2] in g[m[1]])).map(m=>m[0]);
 console.log('undocumented enum refs:', bad.length?bad.join(', '):'none');
 eval(src);
 

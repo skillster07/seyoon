@@ -1,4 +1,4 @@
-"""Layout/timing sketch for SC01 v04 (NOT an After Effects render).
+"""Layout/timing sketch for SC01 v04.1 (NOT an After Effects render).
 Re-implements the builder's camera, rig and timing maths in 2D to show composition per beat."""
 import math, random
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -53,6 +53,18 @@ def frame(t, seed=3):
     if hal > 0:
         hx2, hy2, k2 = proj(hx, hy, 30, t)
         glow(img, (hx2, hy2), (R + 20) * k2, (255, 168, 97), 0.55 * hal, 70 * k2)
+    # point light (behind the window plane: the opening iris covers it)
+    pt = t - C['point']
+    if pt > 0 and t < bl + 1.2:
+        beat = lambda c: math.exp(-((pt - c) / 0.18) ** 2)
+        s = clamp(pt / 0.5) * (1 + .35 * beat(.55) + .25 * beat(.8) + .35 * beat(1.35) + .25 * beat(1.6))
+        s *= 1 + 5 * clamp((t - bl) / 0.9); op = 1 - clamp((t - bl - 0.4) / 0.8)
+        fl = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        ImageDraw.Draw(fl).ellipse([px - 260 * k * (1 + 1.6 * clamp((t - bl) / 1.0)), py - 2, px + 260 * k * (1 + 1.6 * clamp((t - bl) / 1.0)), py + 2], fill=(255, 204, 143, int(115 * op)))
+        img.alpha_composite(fl.filter(ImageFilter.GaussianBlur(4)))
+        glow(img, (px, py), 7 * s * k, (255, 237, 209), 0.4 * op, 60)
+        glow(img, (px, py), 7 * s * k, (255, 237, 209), 0.65 * op, 18)
+        glow(img, (px, py), 7 * s * k, (255, 245, 230), op, 0)
     # window (iris)
     ir = out3(clamp((t - bl) / 1.6)); rad = max(0, (R + 70) * ir - 70) * k
     if rad > 1:
@@ -90,23 +102,11 @@ def frame(t, seed=3):
             ang = random.uniform(0, 2 * math.pi); dist = (R + 40 + random.uniform(0, 520) * clamp((t - C['layout'] + 0.2) / 2.2)) * k
             x, y = px + math.cos(ang) * dist, py + math.sin(ang) * dist
             d.ellipse([x - 2, y - 2, x + 2, y + 2], fill=(255, 220, 170, int(200 * sa)))
-    # point light
-    pt = t - C['point']
-    if pt > 0 and t < bl + 1.2:
-        beat = lambda c: math.exp(-((pt - c) / 0.18) ** 2)
-        s = clamp(pt / 0.5) * (1 + .35 * beat(.55) + .25 * beat(.8) + .35 * beat(1.35) + .25 * beat(1.6))
-        s *= 1 + 5 * clamp((t - bl) / 0.9); op = 1 - clamp((t - bl - 0.4) / 0.8)
-        fl = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        ImageDraw.Draw(fl).ellipse([px - 260 * k * (1 + 1.6 * clamp((t - bl) / 1.0)), py - 2, px + 260 * k * (1 + 1.6 * clamp((t - bl) / 1.0)), py + 2], fill=(255, 204, 143, int(115 * op)))
-        img.alpha_composite(fl.filter(ImageFilter.GaussianBlur(4)))
-        glow(img, (px, py), 7 * s * k, (255, 237, 209), 0.4 * op, 60)
-        glow(img, (px, py), 7 * s * k, (255, 237, 209), 0.65 * op, 18)
-        glow(img, (px, py), 7 * s * k, (255, 245, 230), op, 0)
     # path of light
     pp = out3(clamp((t - C['path']) / 2.8))
     if pp > 0:
         pts = []
-        P = [(-120, 985), (760, 915), (2060, 880)]; O = [(360, -26), (460, -12)]; I = [(-360, 22), (-460, 8)]
+        P = [(-120, 1015), (760, 975), (2060, 950)]; O = [(360, -18), (460, -14)]; I = [(-360, 11), (-460, 6)]
         for sgi in range(2):
             p0, p1 = P[sgi], P[sgi + 1]; c0 = (p0[0] + O[sgi][0], p0[1] + O[sgi][1]); c1 = (p1[0] + I[sgi][0], p1[1] + I[sgi][1])
             for j in range(60):
@@ -150,6 +150,6 @@ if __name__ == "__main__":
         fr = frame(t).resize((tw, th), Image.LANCZOS)
         x = 10 + (i % 2) * (tw + 10); y = 10 + (i // 2) * (th + 40)
         sheet.paste(fr, (x, y + 28)); sd.text((x, y + 4), label, font=f, fill=(230, 230, 230))
-    sd.text((10 + tw + 10, 10 + 3 * (th + 40) + 40), "SC01 v04 레이아웃 스케치\nAE 렌더 아님 · 구도와 타이밍 확인용\n빌더와 같은 카메라·리그·타이밍 계산", font=f, fill=(170, 170, 175))
+    sd.text((10 + tw + 10, 10 + 3 * (th + 40) + 40), "SC01 v04.1 레이아웃 스케치\nAE 렌더 아님 · 구도와 타이밍 확인용\n빌더와 같은 카메라·리그·타이밍 계산", font=f, fill=(170, 170, 175))
     sheet.save(out, quality=90)
     print("saved", out)

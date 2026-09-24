@@ -7,11 +7,14 @@
       8-11s  a path of light is drawn along the bottom, small stars light up along it
       whole  camera starts close and pulls back (the world widens), then eases in slowly
     Lights are native AE shape layers with stacked-blur glows (no Saber parameter guessing).
-    Nothing ever passes over the baby face (stencil / silhouette cutters).
+    Nothing ever passes over the baby face: effects in front of the window are cut by stencil / silhouette
+    holes, and the point light + flare sit BEHIND the window plane, so the opening iris covers them.
     Run: File > Scripts > Run Script File... in a NEW, EMPTY project.
+    Automation (osascript + aerender): run RUN_AUTO_SC01_v04.jsx instead. It sets $.global.AHENG_AUTO, so this
+    builder starts from a fresh project, overwrites the fixed .aep and shows no dialog.
 */
 (function () {
-    var VERSION = "SC01 v04.0";
+    var VERSION = "SC01 v04.1";
     var W = 1920, H = 1080, FPS = 30, DUR = 12;
     var ZOOM = 2666.7;                 // 50mm-equivalent zoom for a 1920 comp
     var CX = W / 2, CY = H / 2;
@@ -179,6 +182,15 @@
     // CTRL reference used by expressions inside precomps / main
     var CT = 'comp("' + MAIN_NAME + '").layer("CTRL").effect';
     var TC = 'thisComp.layer("CTRL").effect';
+
+    // automation: a re-run must never add a second copy of the comps to the open project or leave the
+    // previous .aep on disk, otherwise aerender renders a stale build. Unsaved changes in the open project are discarded.
+    var AUTO = ($.global.AHENG_AUTO === true);
+    if (AUTO) {
+        app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES);
+        app.newProject();
+        L("OK      automation: fresh project");
+    }
 
     app.beginUndoGroup("AHENG " + VERSION);
     var proj = app.project;
@@ -468,9 +480,11 @@
         'var st=' + TC + '("Layout Start (s)")(1);\n' +
         TC + '("Sparks %")(1)*linear(time,st-0.2,st+0.4,0,1)*linear(time,st+2.2,st+3.6,1,0);';
 
-    // the first small light: breathes twice (heartbeat) then becomes the window
+    // the first small light: breathes twice (heartbeat) then becomes the window.
+    // It sits just BEHIND the window plane (z +20): the iris opens out of it and covers it from the centre,
+    // so the light never lies on the face; its glow spills around the opening rim and hands over to the halo.
     var point = shapeLight(main, "POINT_LIGHT", { size: [14, 14], color: WARM_WHITE });
-    onRig(point, -4);
+    onRig(point, 20);
     point.transform.scale.expression =
         'var st=' + TC + '("Point Start (s)")(1), bs=' + TC + '("Bloom Start (s)")(1);\n' +
         'var t=time-st;\n' +
@@ -480,9 +494,9 @@
     point.transform.opacity.expression =
         'var bs=' + TC + '("Bloom Start (s)")(1);linear(time,bs+0.4,bs+1.2,100,0);';
     glowStack(point, [[10, 90], [40, 65], [130, 40]], TC);
-    // anamorphic streak through the point
+    // anamorphic streak through the point (also behind the window: only the parts outside the circle show)
     var flare = shapeLight(main, "POINT_FLARE", { size: [520, 3], color: WARM });
-    onRig(flare, -5);
+    onRig(flare, 19);
     var fb = addFx(flare, "ADBE Gaussian Blur 2");
     if (fb) { fb.property(1).setValue(5); }
     flare.transform.opacity.expression =
@@ -492,9 +506,10 @@
         'var bs=' + TC + '("Bloom Start (s)")(1);var s=linear(time,bs,bs+1.0,100,260);[s,100,100];';
 
     // ---------- path of light + stars along it ("오늘의 작은 빛이, 우리의 내일을 밝힙니다") ----------
-    var pathPts = [[-120, 985], [760, 915], [2060, 880]];
-    var pIn = [[0, 0], [-360, 22], [-460, 8]];
-    var pOut = [[360, -26], [460, -12], [0, 0]];
+    // kept >= 80px below the ring (at 9.4-11.2s): at y 880-915 the path and star 4 touched the ring's bottom
+    var pathPts = [[-120, 1015], [760, 975], [2060, 950]];
+    var pIn = [[0, 0], [-360, 11], [-460, 6]];
+    var pOut = [[360, -18], [460, -14], [0, 0]];
     var ps = new Shape();
     ps.vertices = pathPts; ps.inTangents = pIn; ps.outTangents = pOut; ps.closed = false;
     var pathL = shapeLight(main, "PATH_OF_LIGHT", {
@@ -651,7 +666,14 @@
     // ---------- save + log ----------
     var here = File($.fileName).parent;
     try {
-        if (!proj.file) {
+        if (AUTO) {
+            // fixed path from RUN_AUTO_SC01_v04.jsx; overwrite so aerender always reads this build
+            var outA = new File($.global.AHENG_OUT || (here.fsName + "/AHENG_SC01_v04_EDITABLE.aep"));
+            here = outA.parent;
+            if (outA.exists) { outA.remove(); }
+            proj.save(outA);
+            L("SAVED   " + outA.fsName);
+        } else if (!proj.file) {
             var out = new File(here.fsName + "/AHENG_SC01_v04_EDITABLE.aep");
             if (out.exists) { out = new File(here.fsName + "/AHENG_SC01_v04_EDITABLE_" + new Date().getTime() + ".aep"); }
             proj.save(out);
@@ -665,10 +687,11 @@
     for (i = 0; i < log.length; i++) { if (log[i].indexOf("MANUAL") === 0 || log[i].indexOf("MISSING") === 0) { manual++; } }
     var header = VERSION + "\nAfter Effects " + app.version + "\n" + (manual ? manual + " item(s) need a manual check\n" : "no manual items\n") + "----\n";
     try {
-        var lf = new File(here.fsName + "/BUILD_LOG_SC01_v04_" + new Date().getTime() + ".txt");
+        var lf = new File(here.fsName + "/BUILD_LOG_SC01_v04_" + (AUTO ? "latest" : new Date().getTime()) + ".txt");
         lf.encoding = "UTF-8";
         lf.open("w"); lf.write(header + log.join("\n")); lf.close();
     } catch (e8) {}
     main.openInViewer();
-    alert(header + (manual ? "Open BUILD_LOG for the MANUAL list." : "Done."));
+    // a modal alert would block the osascript call until someone clicks OK
+    if (!AUTO) { alert(header + (manual ? "Open BUILD_LOG for the MANUAL list." : "Done.")); }
 })();
