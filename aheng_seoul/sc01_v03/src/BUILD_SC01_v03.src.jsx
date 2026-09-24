@@ -130,7 +130,6 @@
     var fRoot = proj.items.addFolder("AHENG_SC01_v03");
     var fSrc = proj.items.addFolder("01_REPLACE_SOURCE"); fSrc.parentFolder = fRoot;
     var fPre = proj.items.addFolder("02_PRECOMPS"); fPre.parentFolder = fRoot;
-    var fSol = proj.items.addFolder("03_SOLIDS"); fSol.parentFolder = fRoot;
 
     // ---------- MAIN comp first (expressions in precomps refer to it by name) ----------
     var main = proj.items.addComp(MAIN_NAME, W, H, 1, DUR, FPS);
@@ -389,6 +388,7 @@
         ap.addProperty("ADBE Text Position 3D").setValue([0, 26, 0]);
         var sel = a1.property("ADBE Text Selectors").addProperty("ADBE Text Selector");
         try { sel.property("ADBE Text Range Advanced").property("ADBE Text Range Shape").setValue(2); } catch (e5) { L("MANUAL  " + str + " range shape=Ramp Up"); }
+        L("VERIFY  text '" + str + "': invisible before Text Start, reveals left to right");
         // Ramp Up + Offset -100 -> 100: characters start fully hidden and reveal left to right
         sel.property("ADBE Text Percent Offset").expression =
             'var st=thisComp.layer("CTRL").effect("Text Start (s)")(1)+' + inOffset + ';\n' +
