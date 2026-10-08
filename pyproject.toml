@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "roughcut"
+version = "0.1.0"
+description = "Raw footage in, Premiere-ready rough cut (.otio / FCP XML) out."
+requires-python = ">=3.10"
+dependencies = [
+    "opentimelineio>=0.17",
+    "otio-fcp-adapter>=1.0",
+    "scenedetect>=0.6.4",
+    "opencv-python-headless>=4.8",
+    "anthropic>=1.0",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+# Local transcription. Pick one.
+whisper = ["faster-whisper>=1.0"]
+whisperx = ["whisperx>=3.1"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+roughcut = "roughcut.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["roughcut*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
