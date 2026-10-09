@@ -26,3 +26,4 @@ preview.mp4
 
 # local secrets
 anthropic_key.txt
+whisper_model.txt
