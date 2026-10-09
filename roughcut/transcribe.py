@@ -24,16 +24,33 @@ def _faster_whisper(audio: Path, source_key: str, language: str | None, model_si
         raise RuntimeError("faster-whisper is not installed: pip install 'roughcut[whisper]'") from e
 
     import os
+    import sys
 
-    device = os.environ.get("ROUGHCUT_WHISPER_DEVICE", "auto")
-    compute = os.environ.get("ROUGHCUT_WHISPER_COMPUTE", "default")
-    model = WhisperModel(model_size, device=device, compute_type=compute)
-    raw_segments, _info = model.transcribe(
-        str(audio),
-        language=language,
-        word_timestamps=True,
-        vad_filter=True,
-    )
+    # Default to CPU. GPU needs CUDA + cuBLAS + cuDNN DLLs that most machines don't have;
+    # opt in with ROUGHCUT_WHISPER_DEVICE=cuda once they are installed.
+    device = os.environ.get("ROUGHCUT_WHISPER_DEVICE", "cpu")
+    compute = os.environ.get("ROUGHCUT_WHISPER_COMPUTE", "int8" if device == "cpu" else "float16")
+
+    def _run(dev: str, comp: str):
+        model = WhisperModel(model_size, device=dev, compute_type=comp)
+        segments, _info = model.transcribe(
+            str(audio),
+            language=language,
+            word_timestamps=True,
+            vad_filter=True,
+        )
+        return list(segments)  # generator: force it here so GPU failures surface inside this call
+
+    try:
+        raw_segments = _run(device, compute)
+    except (RuntimeError, OSError) as e:
+        msg = str(e).lower()
+        if device != "cpu" and any(k in msg for k in ("cublas", "cudnn", "cuda", "library")):
+            print(f"[roughcut] GPU transcription failed ({e}); falling back to CPU int8", file=sys.stderr)
+            raw_segments = _run("cpu", "int8")
+        else:
+            raise
+
     out: list[Segment] = []
     for i, s in enumerate(raw_segments):
         words = [

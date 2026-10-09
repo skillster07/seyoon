@@ -99,6 +99,16 @@ pytest
 
 테스트는 ffmpeg로 합성 영상을 만들어 전체 파이프라인을 네트워크 없이 돌립니다. Claude 호출은 스텁으로 대체됩니다.
 
+## GPU로 트랜스크립션 (선택)
+
+기본은 CPU입니다. NVIDIA GPU가 있어도 CUDA 12용 cuBLAS와 cuDNN DLL이 없으면 `cublas64_12.dll is not found` 오류가 납니다. GPU를 쓰려면 faster-whisper 문서의 Windows 안내대로 DLL을 설치한 뒤 환경 변수를 지정합니다. https://github.com/SYSTRAN/faster-whisper#gpu
+
+```powershell
+$env:ROUGHCUT_WHISPER_DEVICE = "cuda"
+```
+
+CPU에서는 `small` 모델이 영상 길이와 비슷한 시간, `medium`은 그 두세 배가 걸립니다. [Inference]
+
 ## 한계 (현재 버전)
 
 - 트랜스크립션 품질이 전부를 결정합니다. 한국어 정확도는 팀 영상으로 직접 확인해야 합니다.
