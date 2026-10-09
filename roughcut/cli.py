@@ -144,7 +144,19 @@ def cmd_run(args: argparse.Namespace) -> int:
         transcriber=args.transcriber,
     )
     (out_dir / "analysis.json").write_text(json.dumps(analysis.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
-    return _do_plan_and_write(analysis, args, out_dir)
+    rc = _do_plan_and_write(analysis, args, out_dir)
+    if rc == 0 and not args.keep_work:
+        # The extracted WAVs are only needed during analysis; analysis.json carries everything else.
+        for wav in work.glob("*.wav"):
+            try:
+                wav.unlink()
+            except OSError:
+                pass
+        try:
+            work.rmdir()
+        except OSError:
+            pass
+    return rc
 
 
 def cmd_plan(args: argparse.Namespace) -> int:
@@ -182,6 +194,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--whisper-model", default="large-v3", help="whisper model size (large-v3, medium, small...)")
     run.add_argument("--language", default=None, help="ISO code, e.g. ko. Default: auto-detect")
     run.add_argument("--no-scenes", action="store_true", help="skip shot detection")
+    run.add_argument("--keep-work", action="store_true", help="keep extracted WAVs in <out>/work after a successful run")
     run.add_argument("--scene-threshold", type=float, default=27.0)
     run.add_argument("--silence-db", type=float, default=-35.0)
     run.add_argument("--min-silence", type=float, default=0.5)

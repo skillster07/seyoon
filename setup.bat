@@ -1,7 +1,13 @@
 @echo off
 REM One-time setup for Windows. Double-click this file.
+REM Installs Python packages into ROUGHCUT_HOME\venv on a local disk (see _env.bat), not into this folder.
 setlocal
 cd /d "%~dp0"
+call "%~dp0_env.bat"
+
+echo Code folder : %~dp0
+echo Data folder : %ROUGHCUT_HOME%
+echo.
 
 echo [1/4] Checking Python...
 where python >nul 2>nul
@@ -20,19 +26,20 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [3/4] Creating virtual environment (.venv)...
-if not exist ".venv\Scripts\python.exe" (
-    python -m venv .venv
+echo [3/4] Creating virtual environment at %VENV_DIR% ...
+if not exist "%VENV_PY%" (
+    mkdir "%ROUGHCUT_HOME%" 2>nul
+    python -m venv "%VENV_DIR%"
     if errorlevel 1 (
-        echo   Failed to create .venv
+        echo   Failed to create the virtual environment.
         pause
         exit /b 1
     )
 )
 
-echo [4/4] Installing roughcut and faster-whisper (this takes a few minutes)...
-".venv\Scripts\python.exe" -m pip install --upgrade pip >nul
-".venv\Scripts\python.exe" -m pip install -e ".[whisper]"
+echo [4/4] Installing packages, this takes a few minutes...
+"%VENV_PY%" -m pip install --upgrade pip >nul
+"%VENV_PY%" -m pip install -r "%~dp0requirements.txt"
 if errorlevel 1 (
     echo.
     echo   INSTALL FAILED. Copy the red lines above and send them.
@@ -40,9 +47,15 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM Reclaim space: an old .venv inside this folder is no longer needed.
+if exist "%~dp0.venv\Scripts\python.exe" if /i not "%VENV_DIR%"=="%~dp0.venv" (
+    echo Removing old .venv inside the code folder...
+    rmdir /s /q "%~dp0.venv"
+)
+
 echo.
-".venv\Scripts\python.exe" -m roughcut --version
+"%VENV_PY%" -m roughcut --version
 echo.
 echo DONE. Next: drag a video file onto run.bat
-echo (Optional) Put your Anthropic API key in a file named anthropic_key.txt next to this file to enable the Claude planner.
+echo Optional: put your Anthropic API key in anthropic_key.txt next to this file to enable the Claude planner.
 pause

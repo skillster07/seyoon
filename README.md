@@ -14,8 +14,8 @@
 
 요구 사항: Python 3.10 이상과 ffmpeg가 설치되어 있어야 함. 확인은 PowerShell에서 `python --version`, `ffmpeg -version`.
 
-1. 저장소를 받습니다. `git clone https://github.com/skillster07/seyoon.git` 후 브랜치 `claude/beautiful-cori-6bbj15`로 전환. 이미 받았다면 폴더에서 `git pull`.
-2. `setup.bat`을 더블클릭합니다. 가상환경을 만들고 패키지를 설치합니다. 몇 분 걸립니다. 마지막에 `roughcut 0.1.0`과 `DONE`이 보여야 합니다.
+1. 저장소를 받습니다. `git clone https://github.com/skillster07/seyoon.git` 후 브랜치 `claude/beautiful-cori-6bbj15`로 전환. 이미 받았다면 폴더에서 `git pull`. 코드 폴더는 구글 드라이브 안에 두어도 됩니다.
+2. `setup.bat`을 더블클릭합니다. 패키지는 코드 폴더가 아니라 로컬 디스크의 `D:\roughcut\venv`(D 드라이브가 없으면 `%LOCALAPPDATA%\roughcut\venv`)에 설치됩니다. Whisper 모델 캐시도 같은 곳입니다. 위치를 바꾸려면 코드 폴더에 `roughcut_home.txt`를 만들고 경로 한 줄을 적습니다. 몇 분 걸립니다. 마지막에 `roughcut 0.1.0`과 `DONE`이 보여야 합니다.
 3. Claude 플래너를 쓰려면 같은 폴더에 `anthropic_key.txt` 파일을 만들고 API 키 한 줄만 넣습니다. 없으면 규칙 플래너로 돌아갑니다.
 4. 영상 파일 하나를 `run.bat` 위로 드래그합니다. 영상 옆에 `영상이름_roughcut` 폴더가 생기고 자동으로 열립니다.
 

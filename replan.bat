@@ -10,13 +10,14 @@ if not defined ROUGHCUT_KEEP (
 
 setlocal
 cd /d "%~dp0"
+call "%~dp0_env.bat"
 
 if "%~1"=="" (
     echo Drag an analysis.json onto replan.bat
     exit /b 1
 )
-if not exist ".venv\Scripts\python.exe" (
-    echo .venv not found. Run setup.bat first.
+if not exist "%VENV_PY%" (
+    echo Python environment not found at %VENV_DIR%. Run setup.bat first.
     exit /b 1
 )
 
@@ -44,7 +45,7 @@ echo Rules   : %RULES%
 if defined ANTHROPIC_API_KEY (echo Planner : claude) else (echo Planner : rules - no anthropic_key.txt found)
 echo.
 
-".venv\Scripts\python.exe" -m roughcut plan "%~1" -o "%OUT%" --rules "%RULES%" --preview
+"%VENV_PY%" -m roughcut plan "%~1" -o "%OUT%" --rules "%RULES%" --preview
 set RC=%errorlevel%
 
 echo.

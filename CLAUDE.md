@@ -26,10 +26,22 @@
 - 배치 파일 안 `if` 블록의 `echo`에 괄호를 쓰지 마십시오. 블록이 깨져 창이 즉시 닫힙니다.
 - `.bat`은 CRLF. `.gitattributes`에 설정됨.
 
+## 파일 배치 (2026-10-09 변경)
+- 코드 폴더는 어디든 가능. 구글 드라이브 OPENCODE 안도 가능. 한글 경로 때문에 editable install을 쓰지 않고 `PYTHONPATH`로 실행함(`_env.bat`).
+- 무거운 것은 `ROUGHCUT_HOME`에: `D:\roughcut`(D 드라이브 있으면) 또는 `%LOCALAPPDATA%\roughcut`. `roughcut_home.txt`로 변경 가능.
+  - `venv\` 패키지, `cache\huggingface\` Whisper 모델.
+- 결과물은 영상 옆 `영상이름_roughcut\`. 성공 시 `work\*.wav`는 자동 삭제.
+- 사용자 C 드라이브 용량 문제의 원인은 코드 폴더 안 `.venv`와 사용자 홈의 Whisper 캐시였음. 새 `setup.bat`이 옛 `.venv`를 지움.
+
 ## 사용자 PC에서 실행하는 방법
-- 전체 실행: `run.bat`에 영상 드래그. 또는 `.venv\Scripts\python.exe -m roughcut run "영상" -o 출력폴더 --language ko --rules rules.example.md --preview`
+- 전체 실행: `run.bat`에 영상 드래그. 또는 `_env.bat` 호출 후 `%VENV_PY% -m roughcut run "영상" -o 출력폴더 --language ko --rules rules.example.md --preview`
 - 플래너만 재실행: `replan.bat`에 `analysis.json` 드래그. 또는 `python -m roughcut plan analysis.json -o 출력폴더_v2 --rules ...`
-- 테스트: `.venv\Scripts\python.exe -m pytest -q`
+- 테스트: `%VENV_PY% -m pytest -q` (코드 폴더에서, PYTHONPATH 설정 상태)
+
+## 팀 사용 계획
+- 코드 폴더를 구글 드라이브 OPENCODE에 두면 팀원 PC에 자동 동기화됨. 각 팀원은 `setup.bat` 한 번(각자 로컬 디스크에 venv), 이후 `run.bat` 드래그.
+- `rules.md`는 드라이브로 공유됨. `anthropic_key.txt`도 드라이브에 두면 팀 전체가 키를 공유하는 것이므로 팀 공용 키를 쓰거나 각자 로컬에만 둘 것. 둘 다 gitignore.
+- 2단계(감시 폴더, 처리 PC 1대)는 CLI 품질 확인 뒤.
 
 ## 다음 할 일 (우선순위)
 1. 마지막 `medium` + Claude 플래너 실행 결과(`*_roughcut\report.md`) 확인. 반복 테이크 중 하나만 골랐는지, 섹션 제목이 말이 되는지.

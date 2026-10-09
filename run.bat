@@ -11,13 +11,14 @@ if not defined ROUGHCUT_KEEP (
 
 setlocal
 cd /d "%~dp0"
+call "%~dp0_env.bat"
 
 if "%~1"=="" (
     echo Drag a video file or folder onto run.bat
     exit /b 1
 )
-if not exist ".venv\Scripts\python.exe" (
-    echo .venv not found. Run setup.bat first.
+if not exist "%VENV_PY%" (
+    echo Python environment not found at %VENV_DIR%. Run setup.bat first.
     exit /b 1
 )
 
@@ -50,10 +51,11 @@ if exist "%~dpn1.srt" set TRANSCRIPT_ARGS=--transcriber srt --transcript "%~dpn1
 echo Input : %~1
 echo Output: %OUT%
 echo Rules : %RULES%
+echo Data  : %ROUGHCUT_HOME%
 if defined TRANSCRIPT_ARGS (echo Transcript: sidecar file found, Whisper skipped) else (echo Model : %WHISPER_MODEL%)
 echo.
 
-".venv\Scripts\python.exe" -m roughcut run "%~1" -o "%OUT%" --language ko --whisper-model %WHISPER_MODEL% --rules "%RULES%" --preview %TRANSCRIPT_ARGS%
+"%VENV_PY%" -m roughcut run "%~1" -o "%OUT%" --language ko --whisper-model %WHISPER_MODEL% --rules "%RULES%" --preview %TRANSCRIPT_ARGS%
 set RC=%errorlevel%
 
 echo.
