@@ -10,7 +10,18 @@
                                                                                      report.md
 ```
 
-## 설치
+## Windows 빠른 설치 (터미널 없이)
+
+요구 사항: Python 3.10 이상과 ffmpeg가 설치되어 있어야 함. 확인은 PowerShell에서 `python --version`, `ffmpeg -version`.
+
+1. 저장소를 받습니다. `git clone https://github.com/skillster07/seyoon.git` 후 브랜치 `claude/beautiful-cori-6bbj15`로 전환. 이미 받았다면 폴더에서 `git pull`.
+2. `setup.bat`을 더블클릭합니다. 가상환경을 만들고 패키지를 설치합니다. 몇 분 걸립니다. 마지막에 `roughcut 0.1.0`과 `DONE`이 보여야 합니다.
+3. Claude 플래너를 쓰려면 같은 폴더에 `anthropic_key.txt` 파일을 만들고 API 키 한 줄만 넣습니다. 없으면 규칙 플래너로 돌아갑니다.
+4. 영상 파일 하나를 `run.bat` 위로 드래그합니다. 영상 옆에 `영상이름_roughcut` 폴더가 생기고 자동으로 열립니다.
+
+`run.bat` 기본값: 한국어, Whisper `small` 모델, 미리보기 생성, 규칙 파일은 `rules.md`가 있으면 그것, 없으면 `rules.example.md`. 더 정확한 트랜스크립션이 필요하면 PowerShell에서 `$env:WHISPER_MODEL="medium"`을 설정한 뒤 실행합니다.
+
+## 설치 (터미널)
 
 요구 사항: Python 3.10 이상, ffmpeg와 ffprobe가 PATH에 있어야 함.
 

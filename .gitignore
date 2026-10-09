@@ -23,3 +23,6 @@ preview.mp4
 .DS_Store
 *.local
 *.log
+
+# local secrets
+anthropic_key.txt
