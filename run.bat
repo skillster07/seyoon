@@ -35,7 +35,7 @@ REM Override by writing the model name into whisper_model.txt next to this file.
 if exist "whisper_model.txt" (
     set /p WHISPER_MODEL=<whisper_model.txt
 )
-if "%WHISPER_MODEL%"=="" set WHISPER_MODEL=small
+if "%WHISPER_MODEL%"=="" set WHISPER_MODEL=medium
 
 set OUT=%~dpn1_roughcut
 

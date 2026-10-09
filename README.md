@@ -19,7 +19,7 @@
 3. Claude 플래너를 쓰려면 같은 폴더에 `anthropic_key.txt` 파일을 만들고 API 키 한 줄만 넣습니다. 없으면 규칙 플래너로 돌아갑니다.
 4. 영상 파일 하나를 `run.bat` 위로 드래그합니다. 영상 옆에 `영상이름_roughcut` 폴더가 생기고 자동으로 열립니다.
 
-`run.bat` 기본값: 한국어, Whisper `small` 모델, 미리보기 생성, 규칙 파일은 `rules.md`가 있으면 그것, 없으면 `rules.example.md`. 더 정확한 트랜스크립션이 필요하면 PowerShell에서 `$env:WHISPER_MODEL="medium"`을 설정한 뒤 실행합니다.
+`run.bat` 기본값: 한국어, Whisper `medium` 모델, 미리보기 생성, 규칙 파일은 `rules.md`가 있으면 그것, 없으면 `rules.example.md`. 더 정확한 트랜스크립션이 필요하면 PowerShell에서 `$env:WHISPER_MODEL="medium"`을 설정한 뒤 실행합니다.
 
 ## 설치 (터미널)
 
@@ -69,7 +69,7 @@ roughcut run clip.mp4 -o ./out --planner rules --preview
 | 옵션 | 기본값 | 설명 |
 |---|---|---|
 | `--transcriber` | `faster-whisper` | `faster-whisper`, `whisperx`, `json` |
-| `--whisper-model` | `large-v3` | 느리면 `medium`, `small` |
+| `--whisper-model` | `large-v3` | run.bat 기본값은 `medium`. 느리면 `small` |
 | `--language` | 자동 | `ko` 권장. 자동 감지는 짧은 클립에서 틀림 |
 | `--planner` | `auto` | `claude`, `rules` |
 | `--model` | `claude-opus-5-5` | |
