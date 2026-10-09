@@ -20,7 +20,7 @@ from .planner import PlanOptions, has_anthropic_credentials, load_rules, plan_cl
 from .report import write_report
 from .scenes import detect_shots
 from .timeline import build_timeline, write_outputs
-from .transcribe import load_transcript_json, transcribe
+from .transcribe import load_subtitle_file, load_transcript_json, transcribe
 
 VIDEO_EXTS = {".mp4", ".mov", ".mxf", ".mkv", ".avi", ".m4v", ".mts", ".m2ts", ".webm"}
 
@@ -113,10 +113,12 @@ def cmd_run(args: argparse.Namespace) -> int:
         key = info.path
         if info.has_audio:
             wav = extract_audio(info.path, work / (Path(info.path).stem + ".wav"))
-            if args.transcriber == "json":
+            if args.transcriber in ("json", "srt"):
                 if not args.transcript:
-                    raise SystemExit("--transcriber json requires --transcript <file>")
-                segs = load_transcript_json(Path(args.transcript), key)
+                    raise SystemExit(f"--transcriber {args.transcriber} requires --transcript <file>")
+                loader = load_transcript_json if args.transcriber == "json" else load_subtitle_file
+                segs = loader(Path(args.transcript), key)
+                _log(f"loaded transcript from {Path(args.transcript).name}")
             else:
                 _log(f"transcribing {info.name} with {args.transcriber} ({args.whisper_model})")
                 segs = transcribe(args.transcriber, wav, key, args.language, args.whisper_model)
@@ -175,8 +177,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="analyse footage and write a rough cut")
     run.add_argument("media", nargs="+", help="video files or directories")
-    run.add_argument("--transcriber", choices=["faster-whisper", "whisperx", "json"], default="faster-whisper")
-    run.add_argument("--transcript", help="existing transcript JSON (with --transcriber json)")
+    run.add_argument("--transcriber", choices=["faster-whisper", "whisperx", "json", "srt"], default="faster-whisper")
+    run.add_argument("--transcript", help="existing transcript: JSON (analysis/WhisperX/faster-whisper) or SRT/VTT")
     run.add_argument("--whisper-model", default="large-v3", help="whisper model size (large-v3, medium, small...)")
     run.add_argument("--language", default=None, help="ISO code, e.g. ko. Default: auto-detect")
     run.add_argument("--no-scenes", action="store_true", help="skip shot detection")

@@ -39,13 +39,21 @@ if "%WHISPER_MODEL%"=="" set WHISPER_MODEL=medium
 
 set OUT=%~dpn1_roughcut
 
+REM If a transcript sits next to the video with the same name, use it instead of running Whisper.
+REM   video.srt / video.vtt        -> SRT/VTT cues (e.g. from subtitle-core)
+REM   video.whisperx.json          -> raw WhisperX JSON with word timings
+set TRANSCRIPT_ARGS=
+if exist "%~dpn1.whisperx.json" set TRANSCRIPT_ARGS=--transcriber json --transcript "%~dpn1.whisperx.json"
+if exist "%~dpn1.vtt" set TRANSCRIPT_ARGS=--transcriber srt --transcript "%~dpn1.vtt"
+if exist "%~dpn1.srt" set TRANSCRIPT_ARGS=--transcriber srt --transcript "%~dpn1.srt"
+
 echo Input : %~1
 echo Output: %OUT%
 echo Rules : %RULES%
-echo Model : %WHISPER_MODEL%
+if defined TRANSCRIPT_ARGS (echo Transcript: sidecar file found, Whisper skipped) else (echo Model : %WHISPER_MODEL%)
 echo.
 
-".venv\Scripts\python.exe" -m roughcut run "%~1" -o "%OUT%" --language ko --whisper-model %WHISPER_MODEL% --rules "%RULES%" --preview
+".venv\Scripts\python.exe" -m roughcut run "%~1" -o "%OUT%" --language ko --whisper-model %WHISPER_MODEL% --rules "%RULES%" --preview %TRANSCRIPT_ARGS%
 set RC=%errorlevel%
 
 echo.

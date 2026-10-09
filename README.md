@@ -99,6 +99,17 @@ pytest
 
 테스트는 ffmpeg로 합성 영상을 만들어 전체 파이프라인을 네트워크 없이 돌립니다. Claude 호출은 스텁으로 대체됩니다.
 
+## 외부 트랜스크립트 사용 (subtitle-core 등)
+
+이미 더 좋은 트랜스크립션 도구가 있으면 Whisper를 건너뛸 수 있습니다. 영상과 같은 폴더에 같은 이름으로 두면 `run.bat`이 자동으로 집어 씁니다.
+
+| 파일 | 내용 | 비고 |
+|---|---|---|
+| `영상.srt` 또는 `영상.vtt` | 자막 큐 | 큐 단위 타이밍. 러프컷에는 충분 |
+| `영상.whisperx.json` | WhisperX 원본 JSON | 단어 단위 타이밍 유지 |
+
+터미널에서는 `--transcriber srt --transcript 영상.srt` 또는 `--transcriber json --transcript 영상.whisperx.json`입니다. SRT의 `이름: 대사` 접두와 VTT의 `<v 이름>` 태그는 화자로 읽습니다.
+
 ## GPU로 트랜스크립션 (선택)
 
 기본은 CPU입니다. NVIDIA GPU가 있어도 CUDA 12용 cuBLAS와 cuDNN DLL이 없으면 `cublas64_12.dll is not found` 오류가 납니다. GPU를 쓰려면 faster-whisper 문서의 Windows 안내대로 DLL을 설치한 뒤 환경 변수를 지정합니다. https://github.com/SYSTRAN/faster-whisper#gpu
