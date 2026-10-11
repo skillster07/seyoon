@@ -1,6 +1,8 @@
 @echo off
-REM Drag an analysis.json (from a previous *_roughcut folder) onto this file.
-REM Re-runs ONLY the planner (no transcription), writing into a new folder next to it.
+REM Drag one of these onto this file:
+REM   outline.md     an edited outline - rebuilds the timeline exactly as written, no API call, no cost
+REM   analysis.json  asks the planner for a NEW outline using the current rules.md
+REM Output goes to a new folder next to the source folder: _v2, _v3, ... never overwrites.
 
 if not defined ROUGHCUT_KEEP (
     set ROUGHCUT_KEEP=1
@@ -13,7 +15,7 @@ cd /d "%~dp0"
 call "%~dp0_env.bat"
 
 if "%~1"=="" (
-    echo Drag an analysis.json onto replan.bat
+    echo Drag outline.md or analysis.json onto replan.bat
     exit /b 1
 )
 if not exist "%VENV_PY%" (
@@ -25,10 +27,14 @@ if exist "anthropic_key.txt" (
     set /p ANTHROPIC_API_KEY=<anthropic_key.txt
 )
 
-set RULES=rules.example.md
+set PROFILE=podcast
+if exist "profile.txt" (
+    set /p PROFILE=<profile.txt
+)
+set RULES=rules.%PROFILE%.example.md
 if exist "rules.md" set RULES=rules.md
 
-REM Output: <source folder>_v2, _v3, ... never overwrites.
+REM Output: <source folder>_v2, _v3, ...
 set SRC=%~dp1
 set SRC=%SRC:~0,-1%
 set N=2
@@ -39,13 +45,20 @@ if exist "%OUT%" (
     goto next
 )
 
-echo Analysis: %~1
-echo Output  : %OUT%
-echo Rules   : %RULES%
-if defined ANTHROPIC_API_KEY (echo Planner : claude) else (echo Planner : rules - no anthropic_key.txt found)
+echo Input  : %~1
+echo Output : %OUT%
+if /i "%~x1"==".md" (
+    echo Mode   : rebuild timeline from the edited outline.md, no API call
+) else (
+    echo Mode   : new outline from analysis.json, profile %PROFILE%, rules %RULES%
+)
 echo.
 
-"%VENV_PY%" -m roughcut plan "%~1" -o "%OUT%" --rules "%RULES%" --preview
+if /i "%~x1"==".md" (
+    "%VENV_PY%" -m roughcut plan "%~1" -o "%OUT%" --profile %PROFILE% --preview
+) else (
+    "%VENV_PY%" -m roughcut plan "%~1" -o "%OUT%" --profile %PROFILE% --rules "%RULES%" --preview
+)
 set RC=%errorlevel%
 
 echo.
@@ -56,4 +69,5 @@ if %RC% neq 0 (
 
 echo DONE. Opening output folder.
 start "" explorer "%OUT%"
+start "" notepad "%OUT%\outline.md"
 exit /b 0

@@ -83,7 +83,7 @@ def test_build_timeline_frame_accurate():
     for clip, cut in zip(video, plan.cuts):
         assert clip.source_range.start_time.rate == 25.0
         assert clip.source_range.start_time.value == round(cut.start * 25)
-    assert video.markers[0].name == "Rough cut"
+    assert video.markers[0].name == "전체"
     # round-trips through the JSON serialiser
     assert otio.adapters.read_from_string(otio.adapters.write_to_string(tl)).name == "t"
 
@@ -119,6 +119,9 @@ def test_end_to_end_with_json_transcript(tmp_path: Path):
             str(transcript),
             "--planner",
             "rules",
+            "--scenes",
+            "--merge-gap",
+            "0.5",
             "--preview",
         ]
     )
@@ -127,6 +130,8 @@ def test_end_to_end_with_json_transcript(tmp_path: Path):
     assert (out / "roughcut.xml").exists()
     assert (out / "report.md").exists()
     assert (out / "preview.mp4").exists()
+    assert (out / "outline.md").exists()
+    assert (out / "transcript.txt").read_text(encoding="utf-8").startswith("#0\t")
 
     analysis = json.loads((out / "analysis.json").read_text(encoding="utf-8"))
     assert len(analysis["segments"]) == 3
@@ -142,3 +147,12 @@ def test_end_to_end_with_json_transcript(tmp_path: Path):
     rc = main(["plan", str(out / "analysis.json"), "-o", str(tmp_path / "out2"), "--planner", "rules", "--name", "v2"])
     assert rc == 0
     assert (tmp_path / "out2" / "v2.otio").exists()
+
+    # edit the 구성안 by hand: keep only the last sentence, then rebuild without any model call
+    edited = tmp_path / "out2" / "outline.md"
+    edited.write_text("# 구성안\n\n## 마무리\n- #2-#2 마지막 문장\n\n## 제외\n- #0-#1 앞부분\n", encoding="utf-8")
+    rc = main(["plan", str(edited), "-o", str(tmp_path / "out3")])
+    assert rc == 0
+    tl3 = otio.adapters.read_from_file(str(tmp_path / "out3" / "roughcut.otio"))
+    v3 = [t for t in tl3.tracks if t.kind == otio.schema.TrackKind.Video][0]
+    assert len(v3) == 1 and v3.markers[0].name == "마무리"
